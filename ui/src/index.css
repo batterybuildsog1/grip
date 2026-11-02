@@ -1,0 +1,536 @@
+/* Global rules. Every colour, face, weight and corner is a --mc-* token (styles/themes.css); sizes and
+   spacing are layout L3's (design/site/public/finals/L3/app.css, 1440x900: top bar 52, column 240,
+   sheet 1192, reading column 760). No icons: words, type, spacing and borders. */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+	margin: 0;
+	padding: 0;
+}
+
+/* The one preflight rule kept: a `border` utility draws a solid token-coloured line anywhere (zero
+   specificity, so any class wins). */
+:where(*, *::before, *::after) {
+	border-width: 0;
+	border-style: solid;
+	border-color: var(--mc-border);
+}
+
+h1,
+h2,
+h3,
+h4 {
+	font-size: inherit;
+	font-weight: inherit;
+}
+
+html,
+body,
+#app {
+	height: 100%;
+	overflow: hidden;
+}
+
+/* On mobile browsers 100% of the initial containing block can leave a dead band behind the collapsing
+   URL bar; dvh tracks the dynamic viewport. Only html switches: body's env() padding is border-box. */
+@supports (height: 100dvh) {
+	html {
+		height: 100dvh;
+	}
+}
+
+#app {
+	/* Pan and pinch, no double-tap zoom (taps fire without the 350ms wait). */
+	touch-action: manipulation;
+}
+
+body {
+	font-family: var(--mc-font-ui);
+	font-variant-numeric: tabular-nums;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+	color: var(--mc-text);
+	background: var(--mc-frame);
+	font-size: 14px;
+	line-height: 1.45;
+	padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+		env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
+
+b,
+strong {
+	font-weight: var(--mc-strong-weight);
+}
+
+/* Search fields draw no magnifier or clear button: words, type, spacing and borders (r2). */
+input[type="search"] {
+	-webkit-appearance: none;
+	appearance: none;
+}
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button {
+	-webkit-appearance: none;
+	display: none;
+}
+
+::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+::-webkit-scrollbar-track {
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: color-mix(in srgb, var(--mc-text) 10%, transparent);
+	border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--mc-text) 20%, transparent);
+}
+
+button {
+	background: none;
+	padding: 0;
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+	text-align: inherit;
+}
+button:disabled {
+	cursor: default;
+}
+
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+/* Zero specificity: a control that draws its own focus (a field's border, outline-none) wins. */
+:where(:focus-visible) {
+	outline: 2px solid var(--mc-focus);
+	outline-offset: 2px;
+}
+:focus:not(:focus-visible) {
+	outline: none;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--mc-accent) 22%, transparent);
+	color: inherit;
+}
+
+::placeholder {
+	color: var(--mc-faint);
+	opacity: 1;
+}
+
+input[type="checkbox"] {
+	accent-color: var(--mc-primary);
+}
+
+mark {
+	background: var(--mc-mark);
+	color: inherit;
+}
+
+kbd {
+	font: 400 11px / 1 var(--mc-font-ui);
+	border: 1px solid var(--mc-border);
+	border-radius: calc(var(--mc-radius-control) / 2);
+	padding: 3px 5px;
+	color: var(--mc-muted);
+	background: var(--mc-sheet);
+}
+
+/* Titles: the view's name, the thread's subject, a dialog's heading. */
+.mc-title {
+	font-weight: var(--mc-title-weight);
+	letter-spacing: var(--mc-title-tracking);
+}
+
+/* Paper: what a sender or a file paints is white in Light and Dark (mail HTML, PDF pages, image
+   thumbnails), as on the Mac and the iPhone. "Dim email" tones it down in dark mode. */
+.mc-paper {
+	background: #ffffff;
+}
+
+/* The sender's HTML in its sandboxed frame (EmailHtmlFrame). */
+.email-iframe {
+	display: block;
+	width: 100%;
+	min-width: 0;
+	border: none;
+	min-height: 200px;
+}
+
+/* Menu and disclosure chevrons: the one mark kept, two borders (iOS and macOS draw them too). */
+.mc-caret {
+	display: inline-block;
+	flex: none;
+	width: 6px;
+	height: 6px;
+	margin-left: 7px;
+	border-right: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	transform: translateY(-2px) rotate(45deg);
+	opacity: 0.6;
+}
+
+/* Buttons: one filled per screen (primary); outlined (soft); words (quiet). */
+.mc-primary {
+	background: var(--mc-primary);
+	color: var(--mc-on-primary);
+	border-radius: var(--mc-radius-control);
+	padding: 7px 15px;
+	font-weight: var(--mc-strong-weight);
+	white-space: nowrap;
+}
+.mc-soft {
+	background: var(--mc-sheet);
+	border: 1px solid var(--mc-control);
+	border-radius: var(--mc-radius-control);
+	padding: 6px 12px;
+	white-space: nowrap;
+}
+.mc-soft:hover {
+	border-color: var(--mc-muted);
+}
+.mc-quiet {
+	color: var(--mc-muted);
+	padding: 6px 8px;
+	border-radius: var(--mc-radius-control);
+	white-space: nowrap;
+}
+.mc-quiet:hover {
+	background: var(--mc-raised);
+	color: var(--mc-text);
+}
+.mc-primary:disabled,
+.mc-soft:disabled,
+.mc-quiet:disabled {
+	opacity: 0.45;
+}
+
+/* Loading: the final layout with each value a flat bar at its real size; no shimmer, no fake counts. */
+.mc-skeleton {
+	display: block;
+	height: 10px;
+	border-radius: 999px;
+	background: var(--mc-raised);
+}
+
+@keyframes slide-up {
+	from {
+		transform: translateY(16px);
+		opacity: 0;
+	}
+	to {
+		transform: translateY(0);
+		opacity: 1;
+	}
+}
+.animate-slide-up {
+	animation: slide-up 200ms ease-out;
+}
+
+/* Lists don't chain their scroll to the page (no body bounce on a phone). */
+.scroll-contain {
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+}
+
+/* ------------------------------------------------------------------ the column (views or the rail)
+   It runs 24px under the sheet (z-index below it): unselected items stop 10px short of the sheet, the
+   selected one (a view while browsing, the open conversation while reading) is filled in the sheet
+   colour and joins it, a tab of the sheet. */
+.mc-nav,
+.mc-rail-item {
+	border-radius: var(--mc-radius-control);
+	color: var(--mc-text);
+}
+.mc-nav:hover,
+.mc-rail-item:hover,
+.mc-rail-title:hover,
+.mc-on-frame:hover {
+	background: color-mix(in srgb, var(--mc-sheet) 55%, var(--mc-frame));
+}
+.mc-nav[aria-current],
+.mc-rail-item[aria-current] {
+	background: var(--mc-sheet);
+	width: 100%;
+	padding-right: 46px;
+	border-radius: var(--mc-radius-control) 0 0 var(--mc-radius-control);
+}
+.mc-nav[aria-current]:hover,
+.mc-rail-item[aria-current]:hover {
+	background: var(--mc-sheet);
+}
+.mc-rail-list {
+	scrollbar-width: none;
+}
+.mc-rail-list::-webkit-scrollbar {
+	display: none;
+}
+/* Scroll cues: a hairline under the title when names are scrolled away above, one at the foot when
+   more wait below. */
+.mc-rail-head::after,
+.mc-rail::after {
+	content: "";
+	position: absolute;
+	left: 4px;
+	right: 34px;
+	bottom: 0;
+	border-top: 1px solid transparent;
+	pointer-events: none;
+}
+.mc-rail[data-above="true"] .mc-rail-head::after,
+.mc-rail[data-below="true"]::after {
+	border-top-color: var(--mc-border);
+}
+
+/* ------------------------------------------------------------------ list rows
+   Desktop: one line per conversation (mark 20 | who 196 | subject — new text | files, when). Hover (and
+   any selection) swaps the time for Archive · Read · Trash and the dot for a checkbox. Phone: three
+   lines (who and when, subject, new text). */
+.mc-row + .mc-row > .mc-face::before {
+	content: "";
+	position: absolute;
+	top: 0;
+	left: 40px;
+	right: 12px;
+	border-top: 1px solid var(--mc-rule);
+}
+.mc-rows[data-phone="true"] .mc-row + .mc-row > .mc-face::before {
+	left: 36px;
+	right: 0;
+}
+.mc-row:hover > .mc-face::before,
+.mc-row:hover + .mc-row > .mc-face::before,
+.mc-row[data-selected="true"] > .mc-face::before,
+.mc-row[data-selected="true"] + .mc-row > .mc-face::before,
+.mc-row[data-cursor="true"] > .mc-face::before,
+.mc-row[data-cursor="true"] + .mc-row > .mc-face::before {
+	border-color: transparent;
+}
+/* A row's actions are always laid out, unseen until the row is hovered or holds keyboard focus,
+   so they stay Tab stops: hidden with display, Tab blurred the open button, the actions vanished
+   for that instant and focus fell to <body> (web-r2-04). */
+.mc-acts {
+	display: flex;
+	opacity: 0;
+	pointer-events: none;
+}
+.mc-check {
+	display: none;
+}
+@media (hover: hover) {
+	.mc-row:hover .mc-acts {
+		opacity: 1;
+		pointer-events: auto;
+	}
+	.mc-row:hover [data-part="side"] {
+		visibility: hidden;
+	}
+	.mc-row:hover .mc-check {
+		display: block;
+	}
+	.mc-row:hover [data-part="dot"] {
+		display: none;
+	}
+	.mc-row:hover > .mc-face {
+		background: var(--mc-raised);
+	}
+}
+/* Keyboard focus anywhere in the row (its open button or one of its actions) shows the actions. */
+.mc-row:has(:focus-visible) .mc-acts {
+	opacity: 1;
+	pointer-events: auto;
+}
+.mc-row:has(:focus-visible) [data-part="side"] {
+	visibility: hidden;
+}
+.mc-rows[data-selecting="true"] .mc-check {
+	display: block;
+}
+.mc-rows[data-selecting="true"] [data-part="dot"] {
+	display: none;
+}
+.mc-row[data-selected="true"] > .mc-face {
+	background: var(--mc-raised);
+}
+.mc-row[data-cursor="true"] > .mc-face {
+	background: var(--mc-raised);
+	box-shadow: inset 2px 0 0 var(--mc-accent);
+}
+.mc-open:focus-visible {
+	outline: 2px solid var(--mc-focus);
+	outline-offset: -2px;
+}
+.mc-check[aria-checked="true"] {
+	background: var(--mc-text);
+	border-color: var(--mc-text);
+	box-shadow: inset 0 0 0 3px var(--mc-sheet);
+}
+
+/* "Subject — new text" on the desktop line. */
+.mc-snip::before {
+	content: "—";
+	margin: 0 8px;
+	color: var(--mc-faint);
+}
+
+/* Needs you: "·" between the meta parts. */
+.mc-job-meta > span + span::before {
+	content: "·";
+	margin-right: 6px;
+	color: var(--mc-faint);
+	font-weight: 400;
+}
+
+/* Back's chevron (the thread bar, the phone's Next). */
+.mc-chevron {
+	display: inline-block;
+	flex: none;
+	width: 8px;
+	height: 8px;
+	border-left: 2px solid currentColor;
+	border-bottom: 2px solid currentColor;
+	transform: rotate(45deg);
+	margin: 0 5px;
+}
+
+/* ------------------------------------------------------------------ design-taste (2026-10-30)
+   One action grammar (X3): one filled button per screen (.mc-primary), every other action a word
+   in ink (.mc-word), destructive words in red, set apart. */
+.mc-word {
+	color: var(--mc-text);
+	padding: 6px 10px;
+	border-radius: var(--mc-radius-control);
+	white-space: nowrap;
+}
+.mc-word:hover {
+	background: var(--mc-raised);
+}
+.mc-word:disabled {
+	opacity: 0.45;
+}
+
+/* Settings (WD2) and the phone's Account sheet (WM3): small grey section heads, segmented choices,
+   a switch, and the footer of words. */
+.mc-set-head {
+	font-size: 13px;
+	font-weight: 400;
+	color: var(--mc-muted);
+}
+.mc-seg {
+	display: grid;
+	grid-auto-columns: minmax(0, 1fr);
+	grid-auto-flow: column;
+	gap: 2px;
+	padding: 3px;
+	border-radius: var(--mc-radius-box);
+	background: var(--mc-raised);
+}
+.mc-seg > button {
+	min-height: 38px;
+	border-radius: calc(var(--mc-radius-box) - 2px);
+	color: var(--mc-muted);
+	text-align: center;
+}
+.mc-seg > button[aria-checked="true"] {
+	background: var(--mc-sheet);
+	color: var(--mc-text);
+	font-weight: var(--mc-strong-weight);
+	box-shadow: 0 0 0 1px var(--mc-border);
+}
+.mc-switch {
+	position: relative;
+	flex: none;
+	width: 51px;
+	height: 31px;
+	border-radius: 999px;
+	background: var(--mc-control);
+	transition: background 150ms ease;
+}
+.mc-switch::after {
+	content: "";
+	position: absolute;
+	top: 3px;
+	left: 3px;
+	width: 25px;
+	height: 25px;
+	border-radius: 999px;
+	background: var(--mc-sheet);
+	box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+	transition: transform 150ms ease;
+}
+.mc-switch[aria-checked="true"] {
+	background: var(--mc-primary);
+}
+/* The switch is drawn 31 high, as on iOS; it takes a press 45 high. */
+.mc-switch::before {
+	content: "";
+	position: absolute;
+	inset: -7px -4px;
+}
+.mc-switch[aria-checked="true"]::after {
+	transform: translateX(20px);
+}
+.mc-switch:disabled {
+	opacity: 0.6;
+}
+.mc-set-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 0;
+	padding-top: 8px;
+	border-top: 1px solid var(--mc-rule);
+	color: var(--mc-muted);
+}
+.mc-set-foot > * {
+	display: inline-flex;
+	align-items: center;
+	min-height: 44px;
+	color: inherit;
+	text-decoration: none;
+}
+.mc-set-foot > * + *::before {
+	content: "·";
+	margin: 0 10px;
+	color: var(--mc-faint);
+}
+.mc-set-foot > *:hover {
+	color: var(--mc-text);
+}
+
+/* The phone's bottom sheet of actions (the thread's More, WM4): rows of words, Trash apart in red,
+   Cancel apart. */
+.mc-action-sheet button {
+	display: block;
+	width: 100%;
+	min-height: 52px;
+	padding: 0 20px;
+	text-align: left;
+	font-size: 17px;
+}
+.mc-action-sheet button + button {
+	border-top: 1px solid var(--mc-rule);
+}
+
+/* WM5: 44 px for every control of the app's own chrome on a touch screen. Mail bodies are in their
+   own frames (or plain text with links), so only buttons and menu items are lifted; a button centres
+   its words in the taller box by itself. */
+@media (pointer: coarse) {
+	button:not(.mc-open):not(.mc-check):not(.mc-switch),
+	[role="menuitem"],
+	[role="menuitemradio"],
+	input[type="search"] {
+		min-height: 44px;
+	}
+}

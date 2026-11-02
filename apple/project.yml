@@ -1,0 +1,154 @@
+# Source of truth for the Xcode project (ticket 13). Regenerate with:
+#   cd apple && xcodegen generate
+# The generated MailClaw.xcodeproj is gitignored; never hand-edit it.
+name: MailClaw
+options:
+  bundleIdPrefix: io.examplebusiness
+  deploymentTarget:
+    iOS: "26.0"
+    macOS: "27.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "12"
+    # Override only for isolated fixture apps; distribution keeps the default identity.
+    MAILCLAW_BUNDLE_ID: io.examplebusiness.mailclaw
+    APNS_ENVIRONMENT: development
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+  configs:
+    # A Debug Mac build is never the installed Grip: sharing its id would share the installed app's
+    # sandbox container, defaults and notification permission, and macOS would ask "Grip differs from
+    # previously opened versions" on every test run. The simulator keeps the id; a command-line
+    # MAILCLAW_BUNDLE_ID still wins.
+    # Proof: scripts/debug-identity-e2e.sh.
+    Debug:
+      MAILCLAW_BUNDLE_ID[sdk=macosx*]: io.examplebusiness.mailclaw.debug
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    exactVersion: 7.11.1
+  MailClawKit:
+    path: MailClawKit
+targets:
+  MailClaw:
+    type: application
+    platform: auto
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: MailClaw
+    dependencies:
+      - package: MailClawKit
+      - package: GRDB
+        product: GRDB
+      - target: NotificationService
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(MAILCLAW_BUNDLE_ID)
+        # Scope the manual profile to the app, never Swift package resource bundles.
+        PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]: "$(MAILCLAW_MANUAL_PROFILE)"
+        # The name people see: Grip.app, so the Mac's menu bar,
+        # About window and Dock say Grip. The Swift module, bundle IDs, groups and storage keep MailClaw.
+        PRODUCT_NAME: Grip
+        PRODUCT_MODULE_NAME: MailClaw
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: MailClaw/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Grip
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_APP_SANDBOX[sdk=macosx*]: YES
+        ENABLE_HARDENED_RUNTIME[sdk=macosx*]: YES
+        CODE_SIGN_ENTITLEMENTS: MailClaw/MailClaw.entitlements
+        CODE_SIGN_ENTITLEMENTS[sdk=iphone*]: MailClaw/MailClaw-iOS.entitlements
+      configs:
+        # Debug on the Mac signs ad hoc, so it can't carry provisioned capabilities (see the file).
+        Debug:
+          CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: MailClaw/MailClaw-macOS-Debug.entitlements
+        Release:
+          APNS_ENVIRONMENT: production
+
+  NotificationService:
+    type: app-extension
+    platform: auto
+    supportedDestinations: [iOS, macOS]
+    sources:
+      - path: NotificationService
+    dependencies:
+      - package: MailClawKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(MAILCLAW_BUNDLE_ID).NotificationService
+        PRODUCT_NAME: NotificationService
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NotificationService/Info.plist
+        # App Store upload validation requires a display name in every embedded bundle.
+        INFOPLIST_KEY_CFBundleDisplayName: Grip
+        CODE_SIGN_ENTITLEMENTS: NotificationService/NotificationService.entitlements
+        CODE_SIGN_ENTITLEMENTS[sdk=iphone*]: NotificationService/NotificationService-iOS.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_APP_SANDBOX[sdk=macosx*]: YES
+        ENABLE_HARDENED_RUNTIME[sdk=macosx*]: YES
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS[sdk=macosx*]: NotificationService/NotificationService-macOS-Debug.entitlements
+
+  MailClawUITests:
+    type: bundle.ui-testing
+    platform: auto
+    supportedDestinations: [iOS, macOS]
+    sources:
+      # Optional: the UI test suite is private (it drives local fixtures); a public checkout
+      # generates the project without it.
+      - path: MailClawUITests
+        optional: true
+    dependencies:
+      - target: MailClaw
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.examplebusiness.mailclaw.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: MailClawUITests/Info.plist
+        TEST_TARGET_NAME: MailClaw
+        TARGETED_DEVICE_FAMILY: "1,2"
+schemes:
+  MailClaw:
+    build:
+      targets:
+        MailClaw: all
+        MailClawUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      captureScreenshotsAutomatically: true
+      deleteScreenshotsWhenEachTestSucceeds: true
+      preferredScreenCaptureFormat: screenRecording
+      testPlans:
+        - path: MailClaw.xctestplan
+          defaultPlan: true
+      targets:
+        - MailClawUITests
+  # Deliberate developer launch only. The default/Release scheme never opts into CLI auth.
+  # The private FIFO is prepared by scripts/developer-config.py inside the app sandbox.
+  MailClaw Developer:
+    build:
+      targets:
+        MailClaw: all
+    run:
+      config: Debug
+      environmentVariables:
+        MC_ALLOW_DEVELOPER_CONFIG: "1"
+        MC_DEVELOPER_CONFIG_PIPE: tmp/mc-developer.pipe

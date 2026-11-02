@@ -1,0 +1,38 @@
+{
+  "name": "mailclaw",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --remote",
+    "deploy": "node scripts/deploy.mjs",
+    "tail": "wrangler tail",
+    "test": "npx --yes tsx --import ./tests/stubs/cloudflare-modules.mjs --test ./tests/mailclaw.test.ts ./tests/access-login.test.ts",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:create": "wrangler d1 create mailclaw-d1",
+    "lint": "biome lint ./src",
+    "lint:fix": "biome lint --write --unsafe ./src",
+    "format": "biome format --write ./src",
+    "check": "biome check ./src",
+    "check:fix": "biome check --write --unsafe ./src",
+    "tsc": "tsc --noEmit",
+    "tsc:ui": "cd ui && tsc --noEmit",
+    "tsc:all": "bun run tsc && bun run tsc:ui",
+    "db:init": "bun ./scripts/db-init.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@paralleldrive/cuid2": "^2.2.2",
+    "hono": "^4.8.5",
+    "html-to-text": "^9.0.5",
+    "htmlparser2": "^10.1.0",
+    "postal-mime": "^2.4.4",
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.1.2",
+    "@types/html-to-text": "^9.0.4",
+    "@types/node": "^24.1.0",
+    "linkedom": "^0.18.12",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.24.4"
+  }
+}

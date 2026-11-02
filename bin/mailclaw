@@ -1,0 +1,1592 @@
+#!/usr/bin/env bash
+# mailclaw - CLI for the MailClaw email API.
+# Built for AI agents: JSON on stdout, one JSON error on stderr, stable exit codes.
+#   0 ok · 1 API error · 2 usage error · 3 network/config error
+# Must run on macOS /bin/bash 3.2: no associative arrays, no mapfile, no ${x,,};
+# empty arrays are expanded as "${a[@]+"${a[@]}"}" because of set -u.
+set -euo pipefail
+
+VERSION="3.0.0"
+CONFIG_FILE="${MAILCLAW_CONFIG:-$HOME/.mailclaw/config.json}"
+CMD="help"
+HOST=""
+TOKEN=""
+TMPD=""
+SEQ=0
+API_STATUS=""
+API_OUT=""
+DATA=""
+IDEM_KEY=""
+exec 3>&2
+
+CATEGORIES="personal billing agents notifications newsletters marketing spam home_alerts tax_documents"
+
+ERR_EMITTED=0
+cleanup() {
+	local rc=$?
+	if [[ $rc -ne 0 && $rc -ne 141 && $ERR_EMITTED == 0 ]]; then
+		local why=""
+		if [[ -n "$TMPD" && -s "$TMPD/stderr.log" ]]; then why=$(tail -n 1 "$TMPD/stderr.log" | head -c 200 || true); fi
+		jq -nc --arg m "mailclaw internal failure (exit $rc)${why:+: $why}" \
+			'{error: {code: "CLI_ERROR", message: $m, status: null, retryable: false}}' >&3 2>/dev/null || true
+	fi
+	if [[ -n "$TMPD" ]]; then rm -rf "$TMPD"; fi
+}
+trap cleanup EXIT
+# Any unexpected failure still ends in the JSON error contract.
+# (141 = the reader closed our stdout, e.g. `| head`; stay quiet then.)
+on_err() {
+	trap - ERR
+	if [[ "$1" -ne 141 && $ERR_EMITTED == 0 ]]; then
+		ERR_EMITTED=1
+		local why=""
+		if [[ -n "$TMPD" && -s "$TMPD/stderr.log" ]]; then why=$(tail -n 1 "$TMPD/stderr.log" | head -c 200); fi
+		jq -nc --arg m "mailclaw internal failure (exit $1, line $2)${why:+: $why}" \
+			'{error: {code: "CLI_ERROR", message: $m, status: null, retryable: false}}' >&3 2>/dev/null ||
+			printf '{"error":{"code":"CLI_ERROR","message":"mailclaw internal failure","status":null,"retryable":false}}\n' >&3
+		exit 1
+	fi
+	exit 141
+}
+set -E
+trap 'on_err $? $LINENO' ERR
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+# die CODE MESSAGE EXIT_CODE [RETRYABLE]
+die() {
+	ERR_EMITTED=1
+	jq -nc --arg c "$1" --arg m "$2" --argjson r "${4:-false}" --arg k "$IDEM_KEY" \
+		'{error: {code: $c, message: $m, status: null, retryable: $r}}
+		 + (if $k != "" then {idempotency_key: $k} else {} end)' >&3
+	exit "$3"
+}
+
+usage_err() {
+	ERR_EMITTED=1
+	local hint="mailclaw $CMD --help"
+	if [[ "$CMD" == help ]]; then hint="mailclaw help"; fi
+	jq -nc --arg m "$1" --arg u "$(synopsis "$CMD")" --arg h "$hint" \
+		'{error: {code: "USAGE", message: ($m + ". Run: " + $h), status: null, retryable: false}, usage: $u}' >&3
+	exit 2
+}
+
+need_value() { # need_value FLAG ARGC
+	if [[ "$2" -lt 2 ]]; then usage_err "$1 needs a value"; fi
+}
+
+# ---------------------------------------------------------------------------
+# Config + HTTP
+# ---------------------------------------------------------------------------
+
+read_config() { # read_config -> CFG_HOST, CFG_TOKEN from the config file (exit 3 if unreadable)
+	CFG_HOST=""
+	CFG_TOKEN=""
+	[[ -e "$CONFIG_FILE" ]] || return 0
+	if ! jq -e 'type == "object"' "$CONFIG_FILE" >/dev/null 2>&1; then
+		die CONFIG_INVALID "Config file is unreadable or not a JSON object: $CONFIG_FILE. Run: mailclaw config set --host URL --api-token -" 3
+	fi
+	CFG_HOST=$(jq -r '.host // empty | strings' "$CONFIG_FILE" 2>/dev/null || true)
+	CFG_TOKEN=$(jq -r '.api_token // empty | strings' "$CONFIG_FILE" 2>/dev/null || true)
+}
+
+load_config() { # load_config [need_token=1]
+	local need_token="${1:-1}"
+	read_config
+	HOST="${MAILCLAW_HOST:-$CFG_HOST}"
+	TOKEN="${MAILCLAW_API_TOKEN:-}"
+	if [[ -z "$TOKEN" ]]; then
+		# The saved token belongs to the saved host only; never send it anywhere else.
+		if [[ -n "${MAILCLAW_HOST:-}" && "${MAILCLAW_HOST%/}" != "${CFG_HOST%/}" ]]; then
+			if [[ "$need_token" == 1 ]]; then
+				die CONFIG_MISSING "MAILCLAW_HOST overrides the saved host; set MAILCLAW_API_TOKEN too" 3
+			fi
+		else
+			TOKEN="$CFG_TOKEN"
+		fi
+	fi
+	if [[ -z "$HOST" ]]; then
+		die CONFIG_MISSING "No MailClaw host configured. Run: mailclaw config set --host URL --api-token - (or set MAILCLAW_HOST)" 3
+	fi
+	if [[ "$need_token" == 1 && -z "$TOKEN" ]]; then
+		die CONFIG_MISSING "No API token configured. Run: mailclaw config set --host URL --api-token - (or set MAILCLAW_API_TOKEN)" 3
+	fi
+	rm -f "$TMPD/auth"
+	if [[ -n "$TOKEN" ]]; then
+		(umask 077 && printf 'Authorization: Bearer %s\n' "$TOKEN" >"$TMPD/auth")
+	fi
+}
+
+# api METHOD PATH BODY_FILE [extra curl args...]
+# Sets API_STATUS and API_OUT (response body file). Transport failure exits 3.
+api() {
+	local method="$1" path="$2" body="$3"
+	shift 3
+	SEQ=$((SEQ + 1))
+	API_OUT="$TMPD/resp.$SEQ"
+	local errf="$TMPD/curl.err" rc=0
+	local -a args=(-q -sS -X "$method" -o "$API_OUT" -w '%{http_code}' --connect-timeout 15 --max-time 300
+		-H "Accept: application/json")
+	if [[ -f "$TMPD/auth" ]]; then args+=(-H "@$TMPD/auth"); fi
+	if [[ -n "$body" ]]; then args+=(-H "Content-Type: application/json" --data-binary "@$body"); fi
+	curl "${args[@]}" "$@" "${HOST%/}/${path#/}" >"$TMPD/status" 2>"$errf" || rc=$?
+	if [[ $rc -ne 0 ]]; then
+		die NETWORK_ERROR "curl exit $rc: $(head -c 400 "$errf" | tr -d '\n')" 3 true
+	fi
+	API_STATUS=$(cat "$TMPD/status")
+}
+
+api_ok() { [[ "$API_STATUS" == 2* ]]; }
+
+invalid_response() {
+	ERR_EMITTED=1
+	jq -Rsc --argjson s "$API_STATUS" '{error: {
+		code: "INVALID_RESPONSE",
+		message: ("HTTP \($s) with a non-JSON body: " + (if length > 0 then .[0:200] else "(empty)" end)),
+		status: $s,
+		retryable: ($s == 429 or $s == 502 or $s == 503 or $s == 504)}}
+		+ (if $k != "" then {idempotency_key: $k} else {} end)' --arg k "$IDEM_KEY" "$API_OUT" >&3
+	exit 1
+}
+
+# Print the API error in the contract shape on stderr and exit 1.
+api_error() {
+	ERR_EMITTED=1
+	if jq -e 'type == "object"' "$API_OUT" >/dev/null 2>&1; then
+		jq -c --argjson s "$API_STATUS" '
+			(if (.error | type) == "object" then .error else {message: (.error // .message // null)} end) as $e
+			| ($e.code // "HTTP_\($s)") as $code
+			| ((.data | objects | .state) // null) as $state
+			| {error: {
+				code: $code,
+				message: ($e.message // "Request failed with HTTP \($s)"),
+				status: $s,
+				retryable: (
+					if $code == "SEND_STATUS_UNKNOWN" or $state == "sent" or $state == "unconfirmed" then false
+					elif $state == "retry" then true
+					elif ($s == 429 or $s == 502 or $s == 503 or $s == 504) then true
+					elif ($code == "SEND_STATE_UNAVAILABLE" or $code == "RATE_LIMITED" or $code == "SEND_IN_PROGRESS") then true
+					else false end)}}
+			+ (if .data != null then {data: .data} else {} end)
+			+ (if $k != "" then {idempotency_key: $k} else {} end)' --arg k "$IDEM_KEY" "$API_OUT" >&3
+	else
+		invalid_response
+	fi
+	exit 1
+}
+
+# api_json METHOD PATH BODY_FILE [curl args...] -> DATA = file holding the envelope's .data
+api_json() {
+	api "$@"
+	jq -e 'type == "object"' "$API_OUT" >/dev/null 2>&1 || invalid_response
+	if api_ok && jq -e '.success != false' "$API_OUT" >/dev/null; then
+		DATA="$TMPD/data.$SEQ"
+		jq 'if has("success") then .data else . end' "$API_OUT" >"$DATA"
+		return 0
+	fi
+	api_error
+}
+
+# Binary download: 2xx -> FILE (prints {downloaded,bytes}) or raw bytes on stdout.
+api_download() { # api_download PATH [FILE]
+	api GET "$1" ""
+	api_ok || api_error
+	if [[ -n "${2:-}" ]]; then
+		mv "$API_OUT" "$2" 2>/dev/null || die FILE_WRITE_FAILED "Cannot write $2" 3
+		jq -n --arg f "$2" --argjson b "$(wc -c <"$2" | tr -d ' ')" '{downloaded: $f, bytes: $b}'
+	else
+		cat "$API_OUT"
+	fi
+}
+
+enc() { jq -rn --arg v "$1" '$v | @uri'; } # one URL path segment
+json_array() { jq -n '$ARGS.positional' --args "$@"; }
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+sha256() { shasum -a 256 | awk '{print $1}'; }
+
+write_body() { # write_body JSON -> prints the path of a temp file holding it
+	printf '%s' "$1" >"$TMPD/body.json"
+	echo "$TMPD/body.json"
+}
+
+# ---------------------------------------------------------------------------
+# Output views (jq). --raw on read/thread/search/send/reply skips these.
+# ---------------------------------------------------------------------------
+
+VIEWS='
+def ts: if . == null then null else (if . > 100000000000 then . / 1000 else . end | floor | todate) end;
+def arr: if . == null then [] elif type == "array" then . else [.] end;
+def who($name; $addr): if ($name // "") != "" then "\($name) <\($addr)>" else $addr end;
+# $conv: a conversation row (listing without QUERY); thread counts are only meaningful there.
+def summary($conv): {
+	id, thread_id,
+	date: ((.received_at // .sent_at) | ts),
+	direction,
+	account: (if .direction == "outbound" then .from_address else .to_address end),
+	from: who(.from_name; .from_address),
+	to: ((.to_addresses | arr) as $t | if ($t | length) > 0 then $t else ([.to_address] | map(select(. != null and . != ""))) end),
+	cc: (.cc_addresses | arr),
+	subject, snippet,
+	state: .mailbox_state,
+	category,
+	sub_category: (.sub_category // null),
+	unread:(if $conv and .thread_unread_count != null then .thread_unread_count > 0 else .read_at == null end),
+	attachments: (.attachment_count // 0)
+} + (if $conv then {thread_count: (.thread_count // null)} else {} end);
+def send_view: {state, attempts, submitted_at: (.submitted_at | ts), accepted_at: (.accepted_at | ts), provider, last_error};
+# Without $full, text is the message minus text already shown earlier in the conversation
+# (server .quote, ticket 06) and quoted/quoted_chars say what was left out.
+def message($html; $full): (if $full then null else .quote end) as $q | (summary(false) | del(.snippet)) + {
+	reply_to: (.reply_to_addresses | arr),
+	text: (if $q.has_quoted then $q.new_text else .text_content end),
+	attachments: [(.attachments // [])[] | {id, filename, mime_type, size}]
+}
+	+ (if $q.has_quoted then {quoted: true, quoted_chars: $q.quoted_chars} else {} end)
+	+ (if $html then {html: .html_content} else {} end)
+	+ (if .send then {send: (.send | send_view)} else {} end);
+# Conversation listings, export, and some searches page by offset on the server; the CLI
+# turns that into an opaque "o:N" cursor so every page has the same {items, next_cursor, total}.
+def page($full; $synth; $off; $conv): ((.emails // []) | length) as $n | {
+	items: [(.emails // [])[] | if $full then message(false; true) else summary($conv) end],
+	next_cursor: (.next_cursor // (if $synth and $n > 0 and ($off + $n) < (.total // 0) then "o:\($off + $n)" else null end)),
+	total: (.total // null)
+} + (if .search then {search: {interpreted: .search.interpreted}} else {} end);
+# Ranked search rows: one per conversation, shown through the message that matched best.
+def conv_item: (.display_subject // .subject) as $subject | {
+	id: (.display_email_id // .latest_email_id),
+	thread_id: .id,
+	date: ((.display_received_at // .display_sent_at // .latest_message_at) | ts),
+	direction: .display_direction,
+	account: (if .display_direction == "outbound" then .display_from_address else .display_to_address end),
+	from: who(.display_from_name; .display_from_address),
+	to: ((.display_to_addresses | arr) as $t | if ($t | length) > 0 then $t else ([.display_to_address] | map(select(. != null and . != ""))) end),
+	cc: (.display_cc_addresses | arr),
+	subject: $subject,
+	snippet: .display_snippet,
+	state: .display_mailbox_state,
+	category,
+	unread: ((.unread_count // 0) > 0),
+	attachments: (.attachment_count // 0),
+	thread_count: .message_count
+}
+	+ (if .subject != null and $subject != .subject then {thread_subject: .subject} else {} end)
+	+ (if .display_snippet_source == "attachment" then {matched_in: "attachment"} else {} end);
+def conv_page($off): ((.conversations // []) | length) as $n | {
+	items: [(.conversations // [])[] | conv_item],
+	next_cursor: (if .next_cursor then .next_cursor elif .has_more then "o:\($off + $n)" else null end),
+	total: null
+}
+	+ (if .search then {search: (.search | {interpreted}
+		+ (if .corrected_from then {corrected_from, query} else {} end)
+		+ (if .suggestion then {suggestion} else {} end))} else {} end);
+def thread($html; $full): (.emails // [] | sort_by(.received_at // .sent_at // 0)) as $m
+	| {thread_id: ($m[0].thread_id // null), messages: [$m[] | message($html; $full)]};
+def send_result($req; $key): {
+	email_id: (.email_id // null),
+	state: (.state // "sent"),
+	provider_message_id: (.id // null)
+}
+	+ (if .already_sent then {already_sent: true} else {} end)
+	+ (if (.hosted_attachments // 0) > 0 then {hosted_attachments: .hosted_attachments} else {} end)
+	+ {from: (.from // $req.from), to: (.to // $req.to), cc: (.cc // $req.cc // []), subject: (.subject // $req.subject),
+	   idempotency_key: $key};
+'
+
+view() { # view JQ_EXPR [jq args...] (reads $DATA)
+	local expr="$1"
+	shift
+	jq "$@" "$VIEWS $expr" "$DATA"
+}
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+
+synopsis() {
+	case "$1" in
+	export) echo 'mailclaw export DIRECTORY --quiesced' ;;
+	search | list) echo 'mailclaw search [QUERY] [--messages] [--full] [--from A] [--to A] [--account ADDR] [--domain D] [--state inbox|sent|archived|trash|draft] [--direction inbound|outbound] [--after DATE] [--before DATE] [--unread] [--has-attachments] [--category C] [--sub-category S] [--limit N] [--cursor C] [--raw]' ;;
+	read | get) echo 'mailclaw read ID [--full] [--html] [--raw]' ;;
+	thread) echo 'mailclaw thread ID [--full] [--html] [--raw]' ;;
+	send) echo 'mailclaw send --from A --to A [--to A..] --subject S (--body T | --html H) [--cc A..] [--bcc A..] [--reply-to A] [--attach PATH..] [--key K] [--dry-run] [--raw]' ;;
+	reply) echo 'mailclaw reply ID (--body T | --html H) [--all] [--from A] [--cc A..] [--bcc A..] [--attach PATH..] [--no-quote] [--key K] [--dry-run] [--raw]' ;;
+	triage | archive | trash | restore | mark-read | mark-unread | set-spam | clear-category)
+		echo 'mailclaw triage ID [ID..] (--archive | --trash | --restore | --read | --unread | --category C | --clear-category)' ;;
+	accounts) echo 'mailclaw accounts' ;;
+	attachments) echo 'mailclaw attachments ID' ;;
+	download-attachment) echo 'mailclaw download-attachment EMAIL_ID ATTACHMENT_ID [FILE]' ;;
+	about) echo 'mailclaw about (QUERY [--limit N] [--since DATE] | list [--kind K] | map | set ID|new [--kind K] [--name N] [--alias +A|-A].. [--address +A|-A].. [--parent ID|none] [--notes T|none] | delete ID | link|unlink EMAIL_OR_THREAD_ID ENTITY | import FILE [--dry-run])' ;;
+	raw) echo 'mailclaw raw (get ID [FILE] | headers ID | compare ID | audit [--status S] [--limit N] | purge [--dry-run] [--limit N])' ;;
+	admin) echo 'mailclaw admin (usage [--month YYYY-MM] | credit --key ID --microusd N --note TEXT | draft-thread-repair [--dry-run|--apply] [--limit N] [--cursor ID] | user (create EMAIL [--name N] [--admin] [--owner-key K] [--grant all|for_person:NAME].. | link EMAIL | delete EMAIL | list) | deletions [--all])' ;;
+	draft) echo 'mailclaw draft (create --from A [--to A..] [--subject S] [--body T] [--html H] [--cc A..] [--bcc A..] [--reply-to A] [--in-reply-to MSGID] [--references REFS] | send ID)' ;;
+	delete) echo 'mailclaw delete ID' ;;
+	meta) echo 'mailclaw meta' ;;
+	health) echo 'mailclaw health' ;;
+	config) echo 'mailclaw config (set --host URL --api-token - (token on stdin) | show | path)' ;;
+	version) echo 'mailclaw version' ;;
+	*) echo 'mailclaw help [COMMAND|admin]' ;;
+	esac
+}
+
+usage() {
+	local c="$1"
+	echo "Usage: $(synopsis "$c")"
+	case "$c" in
+	search | list)
+		cat <<'EOF'
+
+Find mail. Output: {items, next_cursor, total, search?}.
+  QUERY              ranked conversation search: one row per conversation, best match first,
+                     shown through the message that matched (id = that message; thread_subject
+                     when the conversation's subject differs). At most 50 rows in all. search:
+                     {interpreted, corrected_from?, suggestion?} says what was searched.
+  (no QUERY)         one row per conversation, newest first
+  --messages         every matching message instead, newest first, cursor-paged
+  --full             like --messages, with the full text
+  --account ADDR     mail received by or sent from ADDR (one of `mailclaw accounts`)
+  --from / --to A    exact sender / recipient address
+  --after / --before YYYY-MM-DD or unix timestamp
+  --unread           only unread     --has-attachments   only with attachments
+  --category C       personal billing agents notifications newsletters marketing spam home_alerts tax_documents
+  --sub-category S   folder inside a category; S1,S2 matches either. Invoices: invoice_conversations,failed_payments
+                     Receipts: receipts. Notifications: security money orders_shipping calendar social product_noise other
+  --limit N          page size, max 100 (default 50)
+  --cursor C         next page: pass next_cursor from the previous page
+  --raw              server response unchanged
+EOF
+		if [[ "$c" == list ]]; then
+			echo "Legacy alias of search. Also accepts: --search/-q Q, --offset N, --is-read true|false, --mailbox LOCALPART, --full (items include text)."
+		fi
+		;;
+	export) printf '\nPause delivery, ingestion, edits, sends and cron before --quiesced. Creates a new private directory containing Maildir, a D1 snapshot, R2 objects and checksums. Needs Python 3.9+. Restart interruptions into a new directory. See docs/hosted/export-restore.md.\n' ;;
+	read | get) printf '\nOne message: summary fields + reply_to, text, attachments[]; sent mail adds send{state,attempts,submitted_at,accepted_at,provider,last_error}. text leaves out text already shown earlier in the conversation, flagged quoted: true + quoted_chars; --full returns the whole body. --html adds html. --raw returns the server object.\n' ;;
+	thread) printf '\nThe conversation containing ID, oldest first: {thread_id, messages:[message]}. Quoted text is left out as in read; --full returns whole bodies.\n' ;;
+	send)
+		cat <<'EOF'
+
+Send a new message. Result: {email_id, state, provider_message_id, already_sent?, from, to, cc, subject}.
+  --from A        required; must be one of `mailclaw accounts`
+  --attach PATH   repeatable; files are base64-encoded and uploaded
+  --key K         idempotency key. Default: derived from every argument plus the UTC date,
+                  so the same command twice on the same day sends once (the second run
+                  reports already_sent:true). Pass a fresh --key to send identical content
+                  again. Reusing a key with different content fails: IDEMPOTENCY_KEY_REUSED.
+  --dry-run       print the request payload; nothing is sent
+  --text T        alias of --body
+EOF
+		;;
+	reply)
+		cat <<'EOF'
+
+Reply in-thread to message ID. The server picks recipients, "Re:" subject, threading
+headers, and the from address (the account that received ID). Result: like send.
+  --all           reply-all (adds the other external To/Cc recipients as Cc)
+  --from A        override the from address
+  --no-quote      do not quote the original below the reply
+  --key K         idempotency key (default: derived from ID, every argument, and the UTC date)
+  --dry-run       show {from,to,cc,bcc,subject,in_reply_to,references,text,html,warnings}; nothing is sent
+EOF
+		;;
+	triage | archive | trash | restore | mark-read | mark-unread | set-spam | clear-category)
+		cat <<'EOF'
+
+Apply one action to one or more messages. Output: {action, ids, updated}.
+  --category C    personal billing agents notifications newsletters marketing spam home_alerts tax_documents
+Legacy aliases: archive|trash|restore|mark-read|mark-unread|set-spam|clear-category ID [ID..]
+EOF
+		;;
+	accounts) printf '\nAddresses you can send from: {accounts:[...]}.\n' ;;
+	attachments) printf '\nAttachment metadata for message ID: {email_id, subject, attachments:[{id,filename,mime_type,size}]}.\n' ;;
+	download-attachment) printf '\nWrite the attachment to FILE (prints {downloaded, bytes}) or raw bytes to stdout.\n' ;;
+	about)
+		cat <<'EOF'
+
+The memory map: people, companies, projects and prospects, and the threads connected to them,
+even when the sender's address does not say who it is (a Gmail address signed with a company
+name, an invoice from a payment service that names the company).
+  QUERY             a name, alias, address or entity id. Output: {entity, parent, members,
+                    latest_activity_at, total_threads, threads:[{thread_id, subject, last_at,
+                    messages, via, evidence, latest_email_id}]}, newest first. via: address
+                    (from/to/cc/reply-to), subject (name or alias), tag (the sorter quoted the
+                    email, or a person linked it). Members are the entity's direct children.
+                    Several matches exit 2 with {candidates}; none exits 1 (NOT_FOUND).
+  --limit N         threads to return, max 500 (default 20)
+  --since DATE      only messages on or after DATE (YYYY-MM-DD)
+  list [--kind K]   every entity (K: person company project prospect)
+  map               the map exactly as the sorter sees it, with its size and hash
+  set ID|new        create ('new', or an unused e_ id) or edit: --alias +A adds, --alias -A
+                    removes; --address the same (exact, or @domain;
+                    freemail @domains are refused); --parent none / --notes none clear them
+  delete ID         delete an entity (children keep their links, lose the parent)
+  link|unlink X E   X: an email id or thread id; E: the entity. unlink hides the whole thread
+                    from E, including later replies; it does not unlink E's children.
+  import FILE       load a seed file {entities:[{id,kind,name,aliases,addresses,parent,notes}]}.
+                    All or nothing; an entry with an open "review" question is refused.
+Subcommand words win over entity names: use the id for an entity named like one.
+`mailclaw search` does not expand entities; use `about`.
+EOF
+		;;
+	config) printf '\nConfig lives in %s. MAILCLAW_HOST / MAILCLAW_API_TOKEN / MAILCLAW_CONFIG override it.\n' "$CONFIG_FILE" ;;
+	*) ;;
+	esac
+}
+
+help_main() {
+	cat <<EOT
+mailclaw $VERSION - email for agents (MailClaw API)
+
+  $(synopsis search)
+  $(synopsis export)
+  $(synopsis read)
+  $(synopsis thread)
+  $(synopsis send)
+  $(synopsis reply)
+  $(synopsis triage)
+  mailclaw accounts                                   addresses you can send from
+  mailclaw attachments ID
+  mailclaw download-attachment EMAIL_ID ATTACHMENT_ID [FILE]
+  mailclaw about QUERY [--limit N] [--since DATE]     threads about a person, company or project
+  mailclaw about list|map|set|delete|link|unlink|import ...
+
+Run \`mailclaw COMMAND --help\` for details. Admin commands: \`mailclaw help admin\`.
+
+Output: JSON on stdout. Errors: one JSON line on stderr,
+  {"error":{"code","message","status","retryable"},"data"?}
+Exit codes: 0 ok, 1 API error, 2 usage error, 3 network/config error.
+Legacy aliases still work: list, get, archive, trash, restore, mark-read, mark-unread,
+  set-spam, clear-category. --json is accepted and ignored.
+EOT
+}
+
+help_admin() {
+	cat <<EOT
+mailclaw $VERSION - admin commands (humans and maintenance scripts)
+
+  $(synopsis raw)
+  $(synopsis admin)
+  $(synopsis draft)
+  mailclaw delete ID                                  permanent delete
+  mailclaw meta                                       workspace metadata
+  mailclaw health                                     API health (no token needed)
+  $(synopsis config)
+  mailclaw version
+
+Environment: MAILCLAW_HOST, MAILCLAW_API_TOKEN, MAILCLAW_CONFIG (default ~/.mailclaw/config.json).
+The saved token is only sent to the saved host: MAILCLAW_HOST needs MAILCLAW_API_TOKEN too.
+EOT
+}
+
+cmd_help() {
+	case "${1:-}" in
+	"") help_main ;;
+	admin) help_admin ;;
+	*) CMD="$1" && usage "$1" ;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
+# Agent tier
+# ---------------------------------------------------------------------------
+
+valid_date() { [[ "$1" =~ ^[0-9]+$ || "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}([T\ ].*)?$ ]]; }
+
+cmd_search() {
+	local mode="$1"
+	shift
+	local -a params=() q_parts=()
+	local full=0 raw=0 messages=0 account="" domain="" mailbox="" offset=0 cursor=""
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--from | --to)
+			need_value "$1" $#
+			params+=(--data-urlencode "${1#--}=$(lower "$2")")
+			shift 2
+			;;
+		--domain)
+			need_value "$1" $#
+			domain=$(lower "$2")
+			shift 2
+			;;
+		--mailbox)
+			need_value "$1" $#
+			mailbox=$(lower "$2")
+			shift 2
+			;;
+		--account)
+			need_value "$1" $#
+			account=$(lower "$2")
+			[[ "$account" == ?*@?* ]] || usage_err "--account needs a full address like you@example.org"
+			shift 2
+			;;
+		--state)
+			need_value "$1" $#
+			case "$2" in inbox | sent | archived | trash | draft) ;; *) usage_err "--state must be inbox|sent|archived|trash|draft" ;; esac
+			params+=(--data-urlencode "mailbox_state=$2")
+			shift 2
+			;;
+		--direction)
+			need_value "$1" $#
+			case "$2" in inbound | outbound) ;; *) usage_err "--direction must be inbound|outbound" ;; esac
+			params+=(--data-urlencode "direction=$2")
+			shift 2
+			;;
+		--after | --before)
+			need_value "$1" $#
+			valid_date "$2" || usage_err "$1 needs YYYY-MM-DD, an ISO timestamp, or a unix timestamp"
+			params+=(--data-urlencode "${1#--}=$2")
+			shift 2
+			;;
+		--category)
+			need_value "$1" $#
+			[[ " $CATEGORIES " == *" $2 "* ]] || usage_err "--category must be one of: $CATEGORIES"
+			params+=(--data-urlencode "category=$2")
+			shift 2
+			;;
+		--sub-category)
+			need_value "$1" $#
+			[[ "$2" =~ ^[a-z_]+(,[a-z_]+)*$ ]] || usage_err "--sub-category needs S or S1,S2 (e.g. receipts or invoice_conversations,failed_payments)"
+			params+=(--data-urlencode "sub_category=$2")
+			shift 2
+			;;
+		--limit)
+			need_value "$1" $#
+			[[ "$2" =~ ^[0-9]+$ ]] || usage_err "$1 needs a whole number"
+			params+=(--data-urlencode "limit=$2")
+			shift 2
+			;;
+		--offset)
+			need_value "$1" $#
+			[[ "$2" =~ ^[0-9]+$ ]] || usage_err "$1 needs a whole number"
+			offset="$2"
+			shift 2
+			;;
+		--cursor)
+			need_value "$1" $#
+			cursor="$2"
+			shift 2
+			;;
+		--unread)
+			params+=(--data-urlencode "is_read=false")
+			shift
+			;;
+		--is-read)
+			need_value "$1" $#
+			case "$2" in true | false) ;; *) usage_err "--is-read must be true|false" ;; esac
+			params+=(--data-urlencode "is_read=$2")
+			shift 2
+			;;
+		--has-attachments)
+			if [[ $# -ge 2 && ("$2" == true || "$2" == false) ]]; then
+				params+=(--data-urlencode "has_attachments=$2")
+				shift 2
+			else
+				params+=(--data-urlencode "has_attachments=true")
+				shift
+			fi
+			;;
+		--search | -q)
+			need_value "$1" $#
+			q_parts+=("$2")
+			shift 2
+			;;
+		--full)
+			full=1
+			shift
+			;;
+		--messages)
+			messages=1
+			shift
+			;;
+		--raw)
+			raw=1
+			shift
+			;;
+		--)
+			shift
+			while [[ $# -gt 0 ]]; do
+				q_parts+=("$1")
+				shift
+			done
+			;;
+		--*) usage_err "Unknown flag: $1" ;;
+		*)
+			q_parts+=("$1")
+			shift
+			;;
+		esac
+	done
+
+	if [[ -n "$account" ]]; then
+		local acct_domain="${account##*@}"
+		if [[ -n "$domain" && "$domain" != "$acct_domain" ]]; then
+			usage_err "--account and --domain disagree"
+		fi
+		domain="$acct_domain"
+		mailbox="${account%@*}"
+	fi
+	# QUERY alone is ranked conversation search (/api/conversations); --messages and
+	# --full keep message rows (/api/emails, newest first).
+	local ranked=0
+	if [[ ${#q_parts[@]} -gt 0 && $messages == 0 && $full == 0 ]]; then ranked=1; fi
+	if [[ $ranked == 1 ]]; then
+		if [[ -n "$mailbox" ]]; then
+			[[ -n "$domain" ]] || usage_err "--mailbox needs --domain (or use --account ADDR)"
+			params+=(--data-urlencode "account=$mailbox@$domain")
+		elif [[ -n "$domain" ]]; then
+			params+=(--data-urlencode "domain=$domain")
+		fi
+		# Every CLI flag is explicit, so the server applies all of them (no All Mail widening).
+		params+=(--data-urlencode "scope=view")
+	else
+		if [[ -n "$mailbox" ]]; then params+=(--data-urlencode "mailbox=$mailbox"); fi
+		if [[ -n "$domain" ]]; then params+=(--data-urlencode "domain=$domain"); fi
+	fi
+	if [[ ${#q_parts[@]} -gt 0 ]]; then
+		params+=(--data-urlencode "q=${q_parts[*]}")
+	fi
+	if [[ "$cursor" == o:* ]]; then
+		offset="${cursor#o:}"
+		[[ "$offset" =~ ^[0-9]+$ ]] || usage_err "Bad --cursor: $cursor"
+	elif [[ -n "$cursor" ]]; then
+		params+=(--data-urlencode "cursor=$cursor")
+	fi
+	if [[ "$offset" != 0 ]]; then params+=(--data-urlencode "offset=$offset"); fi
+	# Conversation rows only when listing without a query, --messages or --full.
+	local conv=true
+	if [[ ${#q_parts[@]} -gt 0 || $messages == 1 || $full == 1 ]]; then conv=false; fi
+	if [[ $messages == 1 && $full == 0 ]]; then params+=(--data-urlencode "rows=messages"); fi
+	# Message rows come with a server cursor. The conversation list pages by
+	# offset and returns none, so synthesize one there.
+	local synth=$conv
+
+	local endpoint="api/emails"
+	if [[ $full == 1 ]]; then endpoint="api/emails?full=1"; fi
+	if [[ $ranked == 1 ]]; then endpoint="api/conversations"; fi
+	load_config
+	api_json GET "$endpoint" "" -G "${params[@]+"${params[@]}"}"
+	if [[ $raw == 1 ]]; then
+		jq . "$DATA"
+	elif [[ $ranked == 1 ]]; then
+		view 'conv_page($off)' --argjson off "$offset"
+	else
+		view 'page($full; $synth; $off; $conv)' --argjson full "$([[ $full == 1 ]] && echo true || echo false)" \
+			--argjson synth "$synth" --argjson off "$offset" --argjson conv "$conv"
+	fi
+}
+
+cmd_read() {
+	local id="" html=false raw=0 full=false
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--html) html=true ;;
+		--full) full=true ;;
+		--raw) raw=1 ;;
+		-*) usage_err "Unknown flag: $1" ;;
+		*)
+			[[ -z "$id" ]] || usage_err "Only one ID allowed"
+			id="$1"
+			;;
+		esac
+		shift
+	done
+	[[ -n "$id" ]] || usage_err "Missing ID"
+	load_config
+	if [[ "$CMD" == thread ]]; then
+		api_json GET "api/emails/$(enc "$id")/thread" ""
+		if [[ $raw == 1 ]]; then jq . "$DATA"; else view 'thread($html; $full)' --argjson html "$html" --argjson full "$full"; fi
+	else
+		local split="?quoted=split"
+		[[ $raw == 1 || $full == true ]] && split=""
+		api_json GET "api/emails/$(enc "$id")$split" ""
+		if [[ $raw == 1 ]]; then jq . "$DATA"; else view 'message($html; $full)' --argjson html "$html" --argjson full "$full"; fi
+	fi
+}
+
+# build_attachments PATH... -> ATT_JSON (array for the API) and ATT_META (array without content).
+# Bytes travel through temp files (base64 -> jq --rawfile), never through argv.
+ATT_JSON=""
+ATT_META=""
+MAX_ATTACH_BYTES=$((25 * 1024 * 1024))
+build_attachments() {
+	ATT_JSON="$TMPD/attachments.json"
+	ATT_META="$TMPD/attachments.meta.json"
+	local -a objs=() metas=()
+	local p i=0 mime sha size total=0
+	for p in "$@"; do
+		[[ -f "$p" && -r "$p" ]] || usage_err "Attachment not found or unreadable: $p"
+		[[ -s "$p" ]] || usage_err "Attachment is empty: $p"
+		i=$((i + 1))
+		size=$(wc -c <"$p" | tr -d ' ')
+		total=$((total + size))
+		[[ $total -le $MAX_ATTACH_BYTES ]] || usage_err "Attachments exceed the 25 MiB total limit"
+		base64 <"$p" | tr -d '\n\r' >"$TMPD/att.$i.b64"
+		mime=$(file -b --mime-type "$p" 2>/dev/null || true)
+		[[ -n "$mime" ]] || mime="application/octet-stream"
+		sha=$(sha256 <"$p")
+		jq -n --rawfile c "$TMPD/att.$i.b64" --arg f "$(basename "$p")" --arg t "$mime" \
+			'{filename: $f, content_type: $t, content_base64: $c}' >"$TMPD/att.$i.json"
+		jq -n --arg f "$(basename "$p")" --arg t "$mime" --arg sha "$sha" --argjson size "$size" \
+			'{filename: $f, content_type: $t, size: $size, sha256: $sha}' >"$TMPD/att.$i.meta"
+		objs+=("$TMPD/att.$i.json")
+		metas+=("$TMPD/att.$i.meta")
+	done
+	[[ $i -le 10 ]] || usage_err "At most 10 attachments"
+	if [[ $i -eq 0 ]]; then
+		echo '[]' >"$ATT_JSON"
+		echo '[]' >"$ATT_META"
+	else
+		jq -s . "${objs[@]}" >"$ATT_JSON"
+		jq -s . "${metas[@]}" >"$ATT_META"
+	fi
+}
+
+# Default idempotency key: sha256 over a versioned tuple of the UTC day, the command, and
+# every effective field (FIELDS_FILE, a JSON object). Same command, same day -> same key.
+default_key() { # default_key COMMAND FIELDS_FILE
+	echo "cli-$(jq -cS --arg cmd "$1" --arg day "$(date -u +%Y-%m-%d)" \
+		'["mailclaw-cli-key-v1", $day, $cmd, .]' "$2" | sha256)"
+}
+
+cmd_send() {
+	local from="" subject="" key="" dry=0 raw=0
+	local -a to=() cc=() bcc=() reply_to=() attach=()
+	: >"$TMPD/text"
+	: >"$TMPD/html"
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--from | --subject | --body | --text | --html | --key | --to | --cc | --bcc | --reply-to | --attach)
+			need_value "$1" $#
+			case "$1" in
+			--from) from=$(lower "$2") ;;
+			--subject) subject="$2" ;;
+			--body | --text) printf '%s' "$2" >"$TMPD/text" ;;
+			--html) printf '%s' "$2" >"$TMPD/html" ;;
+			--key) key="$2" ;;
+			--to) to+=("$(lower "$2")") ;;
+			--cc) cc+=("$(lower "$2")") ;;
+			--bcc) bcc+=("$(lower "$2")") ;;
+			--reply-to) reply_to+=("$(lower "$2")") ;;
+			--attach) attach+=("$2") ;;
+			esac
+			shift 2
+			;;
+		--dry-run) dry=1 && shift ;;
+		--raw) raw=1 && shift ;;
+		*) usage_err "Unknown argument: $1" ;;
+		esac
+	done
+	[[ -n "$from" ]] || usage_err "Missing --from (see: mailclaw accounts)"
+	[[ ${#to[@]} -gt 0 ]] || usage_err "Missing --to"
+	[[ -n "$subject" ]] || usage_err "Missing --subject"
+	[[ -s "$TMPD/text" || -s "$TMPD/html" ]] || usage_err "Missing --body or --html"
+	[[ ${#reply_to[@]} -le 1 ]] || usage_err "Only one --reply-to allowed"
+	build_attachments "${attach[@]+"${attach[@]}"}"
+
+	# Every effective field; also the source for the payload below.
+	local fields="$TMPD/fields.json"
+	jq -n --arg from "$from" --arg subject "$subject" \
+		--rawfile text "$TMPD/text" --rawfile html "$TMPD/html" \
+		--argjson to "$(json_array "${to[@]}")" \
+		--argjson cc "$(json_array "${cc[@]+"${cc[@]}"}")" \
+		--argjson bcc "$(json_array "${bcc[@]+"${bcc[@]}"}")" \
+		--argjson rt "$(json_array "${reply_to[@]+"${reply_to[@]}"}")" \
+		--slurpfile meta "$ATT_META" \
+		'{from: $from, to: $to, cc: $cc, bcc: $bcc, reply_to: $rt, subject: $subject, text: $text, html: $html,
+		  attachments: [$meta[0][] | {filename, content_type, sha256}]}' >"$fields"
+	if [[ -z "$key" ]]; then key=$(default_key send "$fields"); fi
+	IDEM_KEY="$key"
+
+	local payload="$TMPD/payload.json"
+	jq --arg key "$key" --slurpfile atts "$ATT_JSON" \
+		'{from, to, subject, idempotency_key: $key}
+		 + (if (.cc | length) > 0 then {cc} else {} end)
+		 + (if (.bcc | length) > 0 then {bcc} else {} end)
+		 + (if (.reply_to | length) > 0 then {reply_to: .reply_to[0]} else {} end)
+		 + (if .text != "" then {text} else {} end)
+		 + (if .html != "" then {html} else {} end)
+		 + (if ($atts[0] | length) > 0 then {attachments: $atts[0]} else {} end)' "$fields" >"$payload"
+
+	if [[ $dry == 1 ]]; then
+		jq --slurpfile meta "$ATT_META" \
+			'{dry_run: true, method: "POST", path: "/api/emails/send", idempotency_key,
+			  note: "Local preview only: nothing was sent and the server did not validate it (e.g. the From address).",
+			  payload: (if .attachments then .attachments = $meta[0] else . end)}' "$payload"
+		return 0
+	fi
+	load_config
+	api_json POST "api/emails/send" "$payload"
+	if [[ $raw == 1 ]]; then
+		jq . "$DATA"
+	else
+		view 'send_result($req[0]; $key)' --slurpfile req "$payload" --arg key "$key"
+	fi
+}
+
+cmd_reply() {
+	local id="" from="" key="" all=false quote=true dry=0 raw=0
+	local -a cc=() bcc=() attach=()
+	: >"$TMPD/text"
+	: >"$TMPD/html"
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--from | --body | --text | --html | --key | --cc | --bcc | --attach)
+			need_value "$1" $#
+			case "$1" in
+			--from) from=$(lower "$2") ;;
+			--body | --text) printf '%s' "$2" >"$TMPD/text" ;;
+			--html) printf '%s' "$2" >"$TMPD/html" ;;
+			--key) key="$2" ;;
+			--cc) cc+=("$(lower "$2")") ;;
+			--bcc) bcc+=("$(lower "$2")") ;;
+			--attach) attach+=("$2") ;;
+			esac
+			shift 2
+			;;
+		--all) all=true && shift ;;
+		--no-quote) quote=false && shift ;;
+		--dry-run) dry=1 && shift ;;
+		--raw) raw=1 && shift ;;
+		-*) usage_err "Unknown flag: $1" ;;
+		*)
+			[[ -z "$id" ]] || usage_err "Only one ID allowed"
+			id="$1"
+			shift
+			;;
+		esac
+	done
+	[[ -n "$id" ]] || usage_err "Missing ID"
+	[[ -s "$TMPD/text" || -s "$TMPD/html" ]] || usage_err "Missing --body or --html"
+	build_attachments "${attach[@]+"${attach[@]}"}"
+
+	local fields="$TMPD/fields.json"
+	jq -n --arg id "$id" --arg from "$from" --argjson all "$all" --argjson quote "$quote" \
+		--rawfile text "$TMPD/text" --rawfile html "$TMPD/html" \
+		--argjson cc "$(json_array "${cc[@]+"${cc[@]}"}")" \
+		--argjson bcc "$(json_array "${bcc[@]+"${bcc[@]}"}")" \
+		--slurpfile meta "$ATT_META" \
+		'{target: $id, from: $from, all: $all, quote: $quote, cc: $cc, bcc: $bcc, text: $text, html: $html,
+		  attachments: [$meta[0][] | {filename, content_type, sha256}]}' >"$fields"
+	if [[ -z "$key" ]]; then key=$(default_key reply "$fields"); fi
+	IDEM_KEY="$key"
+
+	# A dry run does not upload attachment bytes; their metadata is echoed client-side.
+	local atts="$ATT_JSON"
+	if [[ $dry == 1 ]]; then atts="$TMPD/none.json" && echo '[]' >"$atts"; fi
+	local payload="$TMPD/payload.json"
+	jq --arg key "$key" --argjson dry "$([[ $dry == 1 ]] && echo true || echo false)" --slurpfile atts "$atts" \
+		'{quote, idempotency_key: $key}
+		 + (if .all then {all: true} else {} end)
+		 + (if .from != "" then {from} else {} end)
+		 + (if (.cc | length) > 0 then {cc} else {} end)
+		 + (if (.bcc | length) > 0 then {bcc} else {} end)
+		 + (if .text != "" then {text} else {} end)
+		 + (if .html != "" then {html} else {} end)
+		 + (if ($atts[0] | length) > 0 then {attachments: $atts[0]} else {} end)
+		 + (if $dry then {dry_run: true} else {} end)' "$fields" >"$payload"
+
+	load_config
+	api_json POST "api/emails/$(enc "$id")/reply" "$payload"
+	if [[ $raw == 1 ]]; then
+		jq . "$DATA"
+	elif [[ $dry == 1 ]]; then
+		jq --slurpfile meta "$ATT_META" --arg key "$key" \
+			'{dry_run: true} + . + {idempotency_key: $key}
+			 + (if ($meta[0] | length) > 0 then {attachments: $meta[0]} else {} end)' "$DATA"
+	else
+		view 'send_result({from: null, to: null, cc: null, subject: null}; $key)' --arg key "$key"
+	fi
+}
+
+cmd_triage() {
+	local action=""
+	local -a ids=()
+	while [[ $# -gt 0 ]]; do
+		local next=""
+		case "$1" in
+		--archive) next="archive" ;;
+		--trash) next="trash" ;;
+		--restore) next="restore" ;;
+		--read) next="mark_read" ;;
+		--unread) next="mark_unread" ;;
+		--clear-category) next="clear_category" ;;
+		--category)
+			need_value "$1" $#
+			[[ " $CATEGORIES " == *" $2 "* ]] || usage_err "Unknown category '$2'. Valid: $CATEGORIES"
+			next="set_$2"
+			shift
+			;;
+		-*) usage_err "Unknown flag: $1" ;;
+		*) ids+=("$1") ;;
+		esac
+		if [[ -n "$next" ]]; then
+			[[ -z "$action" ]] || usage_err "Choose exactly one action"
+			action="$next"
+		fi
+		shift
+	done
+	[[ ${#ids[@]} -gt 0 ]] || usage_err "Missing ID"
+	[[ -n "$action" ]] || usage_err "Missing action (--archive, --trash, --restore, --read, --unread, --category C, --clear-category)"
+	load_config
+	local body
+	body=$(write_body "$(jq -nc --arg a "$action" --argjson ids "$(json_array "${ids[@]}")" '{ids: $ids, action: $a}')")
+	api_json POST "api/emails/actions" "$body"
+	if jq -e '(.updated // 0) == 0' "$DATA" >/dev/null; then
+		ERR_EMITTED=1
+		jq -nc '{error: {code: "NOT_FOUND", message: "No messages matched these ids (wrong id, or outside this token scope)", status: null, retryable: false}, data: {updated: 0}}' >&3
+		exit 1
+	fi
+	jq --arg a "$action" --argjson ids "$(json_array "${ids[@]}")" '{action: $a, ids: $ids, updated: .updated}' "$DATA"
+}
+
+cmd_legacy_triage() { # cmd_legacy_triage OLD_COMMAND ID...
+	local old="$1"
+	shift
+	case "$old" in
+	archive) cmd_triage --archive "$@" ;;
+	trash) cmd_triage --trash "$@" ;;
+	restore) cmd_triage --restore "$@" ;;
+	mark-read) cmd_triage --read "$@" ;;
+	mark-unread) cmd_triage --unread "$@" ;;
+	set-spam) cmd_triage --category spam "$@" ;;
+	clear-category) cmd_triage --clear-category "$@" ;;
+	esac
+}
+
+cmd_accounts() {
+	[[ $# -eq 0 ]] || usage_err "Unexpected argument: $1"
+	load_config
+	api_json GET "api/meta" ""
+	jq '(.configured_domains // []) as $d
+		| {accounts: (
+			if ((.allowed_senders // []) | length) > 0 then .allowed_senders
+			else [(.active_domains // [])[] | (.mailboxes // [])[] | .address
+			      | select(. != null and ((split("@") | last) as $x | $d | index($x)))]
+			end | map(ascii_downcase) | unique)}' "$DATA"
+}
+
+cmd_attachments() {
+	[[ $# -eq 1 && "$1" != -* ]] || usage_err "Need exactly one ID"
+	load_config
+	api_json GET "api/emails/$(enc "$1")" ""
+	jq '{email_id: .id, subject, attachments: [(.attachments // [])[] | {id, filename, mime_type, size}]}' "$DATA"
+}
+
+cmd_download_attachment() {
+	[[ $# -ge 2 && $# -le 3 ]] || usage_err "Need EMAIL_ID ATTACHMENT_ID [FILE]"
+	load_config
+	api_download "api/emails/$(enc "$1")/attachments/$(enc "$2")" "${3:-}"
+}
+
+# ---------------------------------------------------------------------------
+# Memory map (`about`)
+# ---------------------------------------------------------------------------
+
+ABOUT_VIEW='
+def ent: {id, kind, name, aliases, addresses, parent_id, notes}
+  + (if has("owner_threads_12m") then {owner_threads_12m}
+     else {owner_threads_12m} end);
+'
+
+# about_resolve QUERY -> ABOUT_ID (not a subshell, so errors exit once): none exits 1, several 2
+ABOUT_ID=""
+about_resolve() {
+	api_json GET "api/entities" "" -G --data-urlencode "q=$1"
+	local n
+	n=$(jq '.entities | length' "$DATA")
+	if [[ "$n" == 0 ]]; then
+		die NOT_FOUND "No entity matches '$1'. See: mailclaw about list" 1
+	fi
+	if [[ "$n" -gt 1 ]]; then
+		ERR_EMITTED=1
+		jq -c --arg q "$1" '{error: {code: "AMBIGUOUS", message: ("\(.entities | length) entities match \"\($q)\"; pass an id"),
+			status: null, retryable: false}, candidates: [.entities[] | {id, kind, name}]}' "$DATA" >&3
+		exit 2
+	fi
+	ABOUT_ID=$(jq -r '.entities[0].id' "$DATA")
+}
+
+cmd_about() {
+	local sub="${1:-}"
+	[[ -n "$sub" ]] || usage_err "Need a QUERY or a subcommand"
+	case "$sub" in
+	list)
+		shift
+		local kind=""
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--kind)
+				need_value "$1" $#
+				kind="$2"
+				shift 2
+				;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		load_config
+		if [[ -n "$kind" ]]; then
+			api_json GET "api/entities" "" -G --data-urlencode "kind=$kind"
+		else
+			api_json GET "api/entities" ""
+		fi
+		jq "$ABOUT_VIEW"' {entities: [.entities[] | ent], total}' "$DATA"
+		;;
+	map)
+		shift
+		[[ $# -eq 0 ]] || usage_err "Unexpected argument: $1"
+		load_config
+		api_json GET "api/entities/map" ""
+		jq '{chars, entities_total, included: (.included | length), omitted, sha256, text}' "$DATA"
+		;;
+	set)
+		shift
+		[[ $# -ge 1 && "$1" != -* ]] || usage_err "Need an entity ID or 'new'"
+		local id="$1"
+		shift
+		local -a add_alias=() rm_alias=() add_addr=() rm_addr=()
+		local kind="" name="" parent="" notes="" has_parent=0 has_notes=0 v sign
+		while [[ $# -gt 0 ]]; do
+			need_value "$1" $#
+			case "$1" in
+			--kind) kind="$2" ;;
+			--name) name="$2" ;;
+			--alias | --address)
+				v="$2"
+				sign="+"
+				case "$v" in
+				+*) v="${v#+}" ;;
+				-*) sign="-" && v="${v#-}" ;;
+				esac
+				[[ -n "$v" ]] || usage_err "$1 needs +VALUE or -VALUE"
+				if [[ "$1" == --alias && "$sign" == + ]]; then add_alias+=("$v"); fi
+				if [[ "$1" == --alias && "$sign" == - ]]; then rm_alias+=("$v"); fi
+				if [[ "$1" == --address && "$sign" == + ]]; then add_addr+=("$v"); fi
+				if [[ "$1" == --address && "$sign" == - ]]; then rm_addr+=("$v"); fi
+				;;
+			--parent) parent="$2" && has_parent=1 ;;
+			--notes) notes="$2" && has_notes=1 ;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+			shift 2
+		done
+		local body
+		body=$(jq -nc --arg kind "$kind" --arg name "$name" --arg parent "$parent" --arg notes "$notes" \
+			--argjson hp "$has_parent" --argjson hn "$has_notes" \
+			--argjson aa "$(json_array "${add_alias[@]+"${add_alias[@]}"}")" \
+			--argjson ra "$(json_array "${rm_alias[@]+"${rm_alias[@]}"}")" \
+			--argjson ad "$(json_array "${add_addr[@]+"${add_addr[@]}"}")" \
+			--argjson rd "$(json_array "${rm_addr[@]+"${rm_addr[@]}"}")" \
+			'{} + (if $kind != "" then {kind: $kind} else {} end)
+			 + (if $name != "" then {name: $name} else {} end)
+			 + (if ($aa | length) > 0 then {aliases_add: $aa} else {} end)
+			 + (if ($ra | length) > 0 then {aliases_remove: $ra} else {} end)
+			 + (if ($ad | length) > 0 then {addresses_add: $ad} else {} end)
+			 + (if ($rd | length) > 0 then {addresses_remove: $rd} else {} end)
+			 + (if $hp == 1 then {parent_id: (if $parent == "none" then null else $parent end)} else {} end)
+			 + (if $hn == 1 then {notes: (if $notes == "none" then null else $notes end)} else {} end)')
+		[[ "$body" != "{}" ]] || usage_err "Nothing to set"
+		load_config
+		api_json PUT "api/entities/$(enc "$id")" "$(write_body "$body")"
+		print_data
+		;;
+	delete)
+		shift
+		[[ $# -eq 1 && "$1" != -* ]] || usage_err "Need exactly one entity ID"
+		load_config
+		api_json DELETE "api/entities/$(enc "$1")" ""
+		print_data
+		;;
+	link | unlink)
+		shift
+		[[ $# -eq 2 ]] || usage_err "Need EMAIL_OR_THREAD_ID ENTITY"
+		load_config
+		about_resolve "$2"
+		api_json POST "api/entities/$(enc "$ABOUT_ID")/links" \
+			"$(write_body "$(jq -nc --arg t "$1" --arg a "$sub" '{target: $t, action: $a}')")"
+		print_data
+		;;
+	import)
+		shift
+		local file="" dry_run=false
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--dry-run) dry_run=true && shift ;;
+			-*) usage_err "Unknown argument: $1" ;;
+			*)
+				[[ -z "$file" ]] || usage_err "Only one FILE"
+				file="$1"
+				shift
+				;;
+			esac
+		done
+		[[ -n "$file" ]] || usage_err "Need FILE"
+		[[ -r "$file" ]] || die FILE_UNREADABLE "Cannot read $file" 3
+		jq -e '.entities | type == "array"' "$file" >/dev/null 2>&1 || usage_err "FILE must be JSON with an entities array"
+		jq -c --argjson d "$dry_run" '{entities: .entities, dry_run: $d}' "$file" >"$TMPD/import.json"
+		load_config
+		api_json POST "api/entities/import" "$TMPD/import.json"
+		print_data
+		;;
+	*)
+		local query="$sub" limit="20" since=""
+		shift
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--limit)
+				need_value "$1" $#
+				[[ "$2" =~ ^[0-9]+$ ]] || usage_err "--limit needs a whole number"
+				limit="$2"
+				shift 2
+				;;
+			--since)
+				need_value "$1" $#
+				valid_date "$2" || usage_err "--since needs YYYY-MM-DD"
+				since="$2"
+				shift 2
+				;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		load_config
+		about_resolve "$query"
+		local -a params=(--data-urlencode "limit=$limit")
+		if [[ -n "$since" ]]; then params+=(--data-urlencode "since=$since"); fi
+		api_json GET "api/entities/$(enc "$ABOUT_ID")/threads" "" -G "${params[@]}"
+		view "$ABOUT_VIEW"'
+			{entity: (.entity | ent), parent, members, latest_activity_at: (.latest_activity_at | ts), total_threads,
+			 threads: [.threads[] | {thread_id, subject, last_at: (.last_at | ts), messages, via, evidence, latest_email_id}]}'
+		;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
+# Admin tier (outputs the server's .data unchanged)
+# ---------------------------------------------------------------------------
+
+print_data() { jq . "$DATA"; }
+
+cmd_raw() {
+	local sub="${1:-}"
+	shift || true
+	case "$sub" in
+	get)
+		[[ $# -ge 1 && $# -le 2 ]] || usage_err "Need ID [FILE]"
+		load_config
+		api_download "api/emails/$(enc "$1")/raw" "${2:-}"
+		;;
+	headers | compare | fidelity)
+		[[ $# -eq 1 ]] || usage_err "Need ID"
+		load_config
+		if [[ "$sub" == headers ]]; then api_json GET "api/emails/$(enc "$1")/raw/headers" ""; else api_json GET "api/emails/$(enc "$1")/fidelity" ""; fi
+		print_data
+		;;
+	audit)
+		local -a params=()
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--status | --limit)
+				need_value "$1" $#
+				params+=(--data-urlencode "${1#--}=$2")
+				shift 2
+				;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		load_config
+		api_json GET "api/admin/raw-email/audit" "" -G "${params[@]+"${params[@]}"}"
+		print_data
+		;;
+	purge)
+		local limit="100" dry_run="0"
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--limit)
+				need_value "$1" $#
+				[[ "$2" =~ ^[0-9]+$ ]] || usage_err "--limit needs a whole number"
+				limit="$2"
+				shift 2
+				;;
+			--dry-run) dry_run="1" && shift ;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		load_config
+		api_json POST "api/admin/raw-email/purge?limit=$limit&dry_run=$dry_run" "$(write_body '{}')"
+		print_data
+		;;
+	*) usage_err "Unknown raw subcommand: ${sub:-(none)}" ;;
+	esac
+}
+
+cmd_admin() {
+	local sub="${1:-}"
+	shift || true
+	case "$sub" in
+	draft-thread-repair)
+		local limit="100" dry_run="1" cursor=""
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--limit | --cursor)
+				need_value "$1" $#
+				if [[ "$1" == --limit ]]; then limit="$2"; else cursor="$2"; fi
+				shift 2
+				;;
+			--dry-run) dry_run="1" && shift ;;
+			--apply) dry_run="0" && shift ;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		[[ "$limit" =~ ^[0-9]+$ ]] || usage_err "--limit needs a whole number"
+		load_config
+		local path="api/admin/drafts/thread-repair?limit=$limit&dry_run=$dry_run"
+		if [[ -n "$cursor" ]]; then path="$path&cursor=$(jq -rn --arg c "$cursor" '$c | @uri')"; fi
+		api_json POST "$path" "$(write_body '{}')"
+		print_data
+		;;
+	usage)
+  local month=""
+  while [ "$#" -gt 0 ]; do
+   case "$1" in --month) [ "$#" -ge 2 ] || usage_err "--month needs YYYY-MM"; month="$2"; shift 2 ;; *) usage_err "Unknown usage option: $1" ;; esac
+  done
+  load_config
+  api_json GET "api/admin/usage${month:+?month=$(enc "$month")}" ""
+  print_data
+  ;;
+ credit)
+  local key="" amount="" note=""
+  while [ "$#" -gt 0 ]; do
+   case "$1" in --key) need_value "$1" $#; key="$2"; shift 2 ;; --microusd) need_value "$1" $#; amount="$2"; shift 2 ;; --note) need_value "$1" $#; note="$2"; shift 2 ;; *) usage_err "Unknown credit option: $1" ;; esac
+  done
+  [ -n "$key" ] && [ -n "$amount" ] && [ -n "$note" ] || usage_err "credit --key ID --microusd N --note TEXT"
+  load_config
+  api_json POST "api/admin/usage/credit" "$(write_body "$(jq -nc --arg k "$key" --arg a "$amount" --arg n "$note" '{key:$k,amount_microusd:($a|tonumber),note:$n}')")"
+  print_data
+  ;;
+ user) cmd_admin_user "$@" ;;
+	deletions)
+		# Account deletion requests from the apps (SPEC §3); purge by docs/ACCOUNT-DELETION.md.
+		local all=""
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--all) all="?all=1" && shift ;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		load_config
+		api_json GET "api/admin/deletions$all" ""
+		print_data
+		;;
+	*) usage_err "Unknown admin subcommand: ${sub:-(none)}" ;;
+	esac
+}
+
+# Accounts (ticket 09). Prints a one-time set-password link, never a password: send the link
+# to the person privately. A user without --grant can sign in but sees no mail.
+cmd_admin_user() {
+	local sub="${1:-}"
+	shift || true
+	case "$sub" in
+	create)
+		[[ $# -ge 1 && "$1" != --* ]] || usage_err "Need EMAIL"
+		local email="$1" name="" admin=false owner_key="" grants="[]" kind value
+		shift
+		while [[ $# -gt 0 ]]; do
+			case "$1" in
+			--name | --owner-key | --grant)
+				need_value "$1" $#
+				case "$1" in
+				--name) name="$2" ;;
+				--owner-key) owner_key="$2" ;;
+				--grant)
+					kind="${2%%:*}"
+					value=""
+					if [[ "$2" == *:* ]]; then value="${2#*:}"; fi
+					grants=$(jq -c --arg k "$kind" --arg v "$value" '. + [{kind: $k} + (if $v == "" then {} else {value: $v} end)]' <<<"$grants")
+					;;
+				esac
+				shift 2
+				;;
+			--admin) admin=true && shift ;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+		done
+		load_config
+		api_json POST "api/admin/users" "$(write_body "$(jq -nc --arg e "$email" --arg n "$name" --arg o "$owner_key" \
+			--argjson a "$admin" --argjson g "$grants" \
+			'{email: $e, is_admin: $a, grants: $g} + (if $n == "" then {} else {name: $n} end)
+			 + (if $o == "" then {} else {owner_key: $o} end)')")"
+		print_data
+		;;
+	link | delete)
+		[[ $# -eq 1 ]] || usage_err "Need EMAIL"
+		load_config
+		if [[ "$sub" == link ]]; then
+			api_json POST "api/admin/users/$(enc "$1")/password-link" "$(write_body '{}')"
+		else
+			api_json DELETE "api/admin/users/$(enc "$1")" ""
+		fi
+		print_data
+		;;
+	list)
+		[[ $# -eq 0 ]] || usage_err "list takes no arguments"
+		load_config
+		api_json GET "api/admin/users" ""
+		print_data
+		;;
+	*) usage_err "Unknown admin user subcommand: ${sub:-(none)}" ;;
+	esac
+}
+
+cmd_draft() {
+	local sub="${1:-}"
+	shift || true
+	case "$sub" in
+	create)
+		local from="" subject="" irt="" refs=""
+		local -a to=() cc=() bcc=() reply_to=()
+		: >"$TMPD/text"
+		: >"$TMPD/html"
+		while [[ $# -gt 0 ]]; do
+			need_value "$1" $#
+			case "$1" in
+			--from) from=$(lower "$2") ;;
+			--subject) subject="$2" ;;
+			--body | --text) printf '%s' "$2" >"$TMPD/text" ;;
+			--html) printf '%s' "$2" >"$TMPD/html" ;;
+			--to) to+=("$(lower "$2")") ;;
+			--cc) cc+=("$(lower "$2")") ;;
+			--bcc) bcc+=("$(lower "$2")") ;;
+			--reply-to) reply_to+=("$(lower "$2")") ;;
+			--in-reply-to) irt="$2" ;;
+			--references) refs="$2" ;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+			shift 2
+		done
+		[[ -n "$from" ]] || usage_err "Missing --from"
+		local body="$TMPD/draft.json"
+		jq -n --arg from "$from" --arg subject "$subject" --rawfile text "$TMPD/text" --rawfile html "$TMPD/html" \
+			--arg irt "$irt" --arg refs "$refs" \
+			--argjson to "$(json_array "${to[@]+"${to[@]}"}")" --argjson cc "$(json_array "${cc[@]+"${cc[@]}"}")" \
+			--argjson bcc "$(json_array "${bcc[@]+"${bcc[@]}"}")" --argjson rt "$(json_array "${reply_to[@]+"${reply_to[@]}"}")" \
+			'{from: $from}
+			 + (if $subject != "" then {subject: $subject} else {} end)
+			 + (if ($to | length) > 0 then {to: $to} else {} end)
+			 + (if ($cc | length) > 0 then {cc: $cc} else {} end)
+			 + (if ($bcc | length) > 0 then {bcc: $bcc} else {} end)
+			 + (if ($rt | length) > 0 then {reply_to: $rt} else {} end)
+			 + (if $text != "" then {text: $text} else {} end)
+			 + (if $html != "" then {html: $html} else {} end)
+			 + (if $irt != "" then {in_reply_to: $irt} else {} end)
+			 + (if $refs != "" then {references: $refs} else {} end)' >"$body"
+		load_config
+		api_json POST "api/emails/drafts" "$body"
+		print_data
+		;;
+	send)
+		[[ $# -eq 1 ]] || usage_err "Need exactly one draft ID"
+		load_config
+		api_json POST "api/emails/drafts/$(enc "$1")/send" "$(write_body '{}')"
+		print_data
+		;;
+	*) usage_err "Unknown draft subcommand: ${sub:-(none)}" ;;
+	esac
+}
+
+cmd_delete() {
+	[[ $# -eq 1 && "$1" != -* ]] || usage_err "Need exactly one ID"
+	load_config
+	api_json DELETE "api/emails/$(enc "$1")" ""
+	print_data
+}
+
+cmd_meta() {
+	[[ $# -eq 0 ]] || usage_err "Unexpected argument: $1"
+	load_config
+	api_json GET "api/meta" ""
+	print_data
+}
+
+cmd_health() {
+	[[ $# -eq 0 ]] || usage_err "Unexpected argument: $1"
+	load_config 0
+	api_json GET "api/health" ""
+	print_data
+}
+
+cmd_config() {
+	local sub="${1:-}"
+	shift || true
+	case "$sub" in
+	set)
+		# The token can come from stdin (`--api-token -`, or no --api-token with piped stdin)
+		# so it never has to appear in argv. It reaches jq through a mode-600 temp file.
+		local h="" t="" have_t=0 from_stdin=0 line=""
+		while [[ $# -gt 0 ]]; do
+			need_value "$1" $#
+			case "$1" in
+			--host) h="${2%/}" ;;
+			--api-token)
+				have_t=1
+				if [[ "$2" == "-" ]]; then from_stdin=1; else t="$2"; fi
+				;;
+			*) usage_err "Unknown argument: $1" ;;
+			esac
+			shift 2
+		done
+		[[ -n "$h" ]] || usage_err "Need --host"
+		if [[ $have_t == 0 && ! -t 0 ]]; then from_stdin=1; fi
+		[[ $have_t == 1 || $from_stdin == 1 ]] || usage_err "Need --api-token - (token on stdin) or --api-token TOKEN"
+		if [[ $from_stdin == 1 ]]; then
+			IFS= read -r line || true
+			t="${line%$'\r'}"
+		fi
+		[[ -n "$t" ]] || usage_err "Empty API token"
+		(umask 077 && printf '%s' "$t" >"$TMPD/token")
+		local dir tmp
+		dir=$(dirname "$CONFIG_FILE")
+		mkdir -p "$dir" 2>/dev/null || die CONFIG_WRITE_FAILED "Cannot create $dir" 3
+		tmp=$(mktemp "$dir/.mailclaw-config.XXXXXX" 2>/dev/null || true)
+		[[ -n "$tmp" && -f "$tmp" ]] || die CONFIG_WRITE_FAILED "Cannot write in $dir" 3
+		chmod 600 "$tmp" 2>/dev/null || { rm -f "$tmp"; die CONFIG_WRITE_FAILED "Cannot chmod $tmp" 3; }
+		jq -n --arg h "$h" --rawfile t "$TMPD/token" '{host: $h, api_token: $t}' >"$tmp" 2>/dev/null ||
+			{ rm -f "$tmp"; die CONFIG_WRITE_FAILED "Cannot write $tmp" 3; }
+		mv -f "$tmp" "$CONFIG_FILE" 2>/dev/null || { rm -f "$tmp"; die CONFIG_WRITE_FAILED "Cannot replace $CONFIG_FILE" 3; }
+		jq -n --arg f "$CONFIG_FILE" --arg h "$h" '{saved: $f, host: $h}'
+		;;
+	show)
+		if [[ ! -e "$CONFIG_FILE" ]]; then
+			echo '{"configured":false}'
+			return 0
+		fi
+		read_config
+		# Only the masked form ever reaches argv.
+		local masked="****"
+		if [[ ${#CFG_TOKEN} -gt 8 ]]; then masked="${CFG_TOKEN:0:4}...${CFG_TOKEN: -4}"; fi
+		jq -n --arg h "$CFG_HOST" --arg m "$masked" --argjson p "$([[ -n "$CFG_TOKEN" ]] && echo true || echo false)" \
+			'{configured: true, host: $h, api_token_present: $p, masked_token: $m}'
+		;;
+	path) jq -n --arg f "$CONFIG_FILE" '{path: $f}' ;;
+	*) usage_err "Unknown config subcommand: ${sub:-(none)}" ;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+# Flags that take a value, across all commands: their values are never read as --help/--json.
+VALUE_FLAGS=" --kind --name --alias --address --parent --notes --since --from --to --cc --bcc --reply-to --subject --body --text --html --key --attach --account --domain --mailbox --state --direction --after --before --category --sub-category --limit --offset --cursor --search -q --is-read --status --host --api-token --in-reply-to --references "
+
+main() {
+	# --json is a global no-op (older docs taught it).
+	while [[ $# -gt 0 && "$1" == "--json" ]]; do shift; done
+	if [[ $# -eq 0 ]]; then
+		help_main
+		return 0
+	fi
+	CMD="$1"
+	shift
+
+	case "$CMD" in
+	help | --help | -h)
+		cmd_help "${1:-}"
+		return 0
+		;;
+	version | --version | -v)
+		echo "{\"version\":\"$VERSION\"}"
+		return 0
+		;;
+	set-important | set-subscription)
+		local old="$CMD"
+		CMD="triage"
+		usage_err "'$old' was retired: MailClaw has no such category. Use: mailclaw triage ID --category C (C: $CATEGORIES)"
+		;;
+	esac
+
+	# In flag position only: --help/-h prints usage (no request), --json is dropped.
+	local -a args=()
+	local a skip=0 opts=1
+	for a in "$@"; do
+		if [[ $skip == 1 || $opts == 0 ]]; then
+			args+=("$a")
+			skip=0
+			continue
+		fi
+		case "$a" in
+		--)
+			opts=0
+			args+=("$a")
+			;;
+		--json) ;;
+		--help | -h)
+			usage "$CMD"
+			return 0
+			;;
+		*)
+			args+=("$a")
+			# read/thread take a boolean --html; send/reply take --html VALUE.
+			if [[ "$VALUE_FLAGS" == *" $a "* ]] && ! [[ "$a" == --html && ("$CMD" == read || "$CMD" == get || "$CMD" == thread) ]]; then
+				skip=1
+			fi
+			;;
+		esac
+	done
+	set -- "${args[@]+"${args[@]}"}"
+
+	TMPD=$(mktemp -d "${TMPDIR:-/tmp}/mailclaw.XXXXXX" 2>/dev/null || true)
+	if [[ -z "$TMPD" || ! -d "$TMPD" ]]; then
+		TMPD=""
+		die TMP_UNAVAILABLE "Cannot create a temp directory in ${TMPDIR:-/tmp}" 3
+	fi
+	# Tool diagnostics go to a log; the one JSON error line goes to the real stderr (fd 3).
+	exec 2>"$TMPD/stderr.log"
+
+	case "$CMD" in
+	export)
+		[[ $# == 2 && "$2" == --quiesced ]] || usage_err "Need DIRECTORY --quiesced (pause all writers and cron first)"
+		load_config
+		local source_dir source_path="${BASH_SOURCE[0]}" link
+		# Resolve relative as well as absolute symlinks to find the companion script.
+		while [[ -L "$source_path" ]]; do
+			source_dir=$(cd "$(dirname "$source_path")" && pwd)
+			link=$(readlink "$source_path")
+			case "$link" in /*) source_path="$link" ;; *) source_path="$source_dir/$link" ;; esac
+		done
+		source_dir=$(cd "$(dirname "$source_path")" && pwd)
+		if python3 "$source_dir/../scripts/instance-archive.py" export "$1" --quiesced --host "$HOST" --auth-file "$TMPD/auth" 2>"$TMPD/archive-error.json"; then
+			:
+		else
+			local reason
+			reason=$(jq -r '.error.message // "Export failed; incomplete directory is not restorable"' "$TMPD/archive-error.json" 2>/dev/null || echo 'Export failed; incomplete directory is not restorable')
+			die EXPORT_FAILED "$reason" 1
+		fi
+		;;
+	search | list) cmd_search "$CMD" "$@" ;;
+	read | get | thread) cmd_read "$@" ;;
+	send) cmd_send "$@" ;;
+	reply) cmd_reply "$@" ;;
+	triage) cmd_triage "$@" ;;
+	archive | trash | restore | mark-read | mark-unread | set-spam | clear-category)
+		cmd_legacy_triage "$CMD" "$@" ;;
+	accounts) cmd_accounts "$@" ;;
+	attachments) cmd_attachments "$@" ;;
+	download-attachment) cmd_download_attachment "$@" ;;
+	about) cmd_about "$@" ;;
+	raw) cmd_raw "$@" ;;
+	admin) cmd_admin "$@" ;;
+	draft) cmd_draft "$@" ;;
+	delete) cmd_delete "$@" ;;
+	meta) cmd_meta "$@" ;;
+	health) cmd_health "$@" ;;
+	config) cmd_config "$@" ;;
+	*)
+		local unknown="$CMD"
+		CMD="help"
+		usage_err "Unknown command: $unknown"
+		;;
+	esac
+}
+
+main "$@"

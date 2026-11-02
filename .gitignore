@@ -1,0 +1,22 @@
+# Dependencies and build output
+node_modules/
+dist/
+.build/
+.swiftpm/
+
+# Cloudflare local state and secrets
+.wrangler/
+.dev.vars
+.env
+wrangler.production.private.jsonc
+wrangler.self-hosted.jsonc
+
+# Logs and OS/editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Lock files other than Bun's
+package-lock.json

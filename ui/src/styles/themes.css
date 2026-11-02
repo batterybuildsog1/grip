@@ -1,0 +1,112 @@
+/* The theme: Grip, Light and Dark (2026-10-31: one theme; it replaces the selectable themes of
+   2026-10-26). Sage, Letter and Clear are gone, and so is the Theme setting. Appearance
+   stays. Failure lists: docs/design/failure-modes-grip-only.md, failure-modes-grip-themes.md. uno.config.ts
+   maps the tokens to utilities (bg-sheet, text-muted, rounded-box, font-read, ...).
+
+   <html data-mode="light|dark"> (and .dark) is set before first paint by the inline script in index.html
+   and on change by lib/theme.ts. A stored mc-theme is never read (an older build's own value: it stays
+   for a rollback). Sender HTML keeps its own white paper (utils/email-render.ts), as do PDF pages and file
+   thumbnails. apple/MailClaw/Theme/Palette.swift mirrors every value (tests/e2e/theme-tokens.e2e.mjs). */
+
+@font-face {
+	font-family: "Instrument Sans";
+	src: url("/fonts/instrument-sans.woff2") format("woff2");
+	font-weight: 400 700;
+	font-stretch: 75% 100%;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Literata";
+	src: url("/fonts/literata.woff2") format("woff2");
+	font-weight: 200 900;
+	font-display: swap;
+}
+
+/* ---------------------------------------------------------------- Grip: the icon as a surface
+   The app icon (icons/03-grip-1024.png) is two colours: a near-black field #141614 and a bone envelope
+   #f2ece0 whose flap is #d6cebd. Light is the envelope (bone sheet, a deeper bone frame, ink); dark is the
+   field (its black as the sheet, bone ink). No hue: the accent is the ink itself, so the unread mark,
+   links, focus and the Mileage route are ink in light and bone in dark, and the open row and the
+   "Next in Personal" well take the flap's tone. Red is the one colour, kept for urgent and Trash.
+   Instrument Sans for the work and Literata for what people wrote (Letter's two files); on Apple SF Pro
+   and New York. Nearly square corners, as the envelope's. */
+:root {
+	color-scheme: light;
+	--mc-frame: #dcd4c3;
+	--mc-sheet: #f2ece0;
+	--mc-raised: #e8e1d3;
+	--mc-border: #dbd3c3;
+	--mc-rule: #e5dfd2;
+	--mc-control: #bcb4a3;
+	--mc-text: #141614;
+	--mc-muted: #4a463d;
+	--mc-faint: #59544b;
+	--mc-accent: #141614;
+	--mc-accent-soft: #d6cebd;
+	--mc-on-accent: #f2ece0;
+	/* Text on a red fill reads like text on the accent. */
+	--mc-on-neg: var(--mc-on-accent);
+	--mc-primary: #141614;
+	--mc-on-primary: #f2ece0;
+	--mc-neg: #a8231a;
+	--mc-neg-soft: #f5dcd5;
+	--mc-warn: #7a4b00;
+	--mc-warn-soft: #f2e1c0;
+	--mc-mark: #f0d97c;
+	--mc-toast: #141614;
+	--mc-on-toast: #f2ece0;
+	--mc-scrim: rgba(20, 22, 20, 0.36);
+	--mc-shadow: 0 12px 32px rgba(20, 22, 20, 0.16), 0 2px 6px rgba(20, 22, 20, 0.08);
+	--mc-focus: #141614;
+	--mc-font-ui: "Instrument Sans", system-ui, -apple-system, sans-serif;
+	--mc-font-read: "Literata", Georgia, serif;
+	--mc-font-native: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+	--mc-font-native-read: ui-serif, "New York", "Literata", Georgia, serif;
+	--mc-title-weight: 700;
+	--mc-title-tracking: -0.02em;
+	--mc-strong-weight: 600;
+	--mc-radius-control: 3px;
+	--mc-radius-box: 4px;
+	--mc-radius-sheet: 6px;
+}
+html[data-mode="dark"] {
+	color-scheme: dark;
+	--mc-frame: #080908;
+	--mc-sheet: #141614;
+	--mc-raised: #1e201d;
+	--mc-border: #2b2d29;
+	--mc-rule: #222420;
+	--mc-control: #4a4b45;
+	--mc-text: #f2ece0;
+	--mc-muted: #c3bdb1;
+	--mc-faint: #a59f94;
+	--mc-accent: #f2ece0;
+	--mc-accent-soft: #34322b;
+	--mc-on-accent: #141614;
+	--mc-primary: #f2ece0;
+	--mc-on-primary: #141614;
+	--mc-neg: #f07d72;
+	--mc-neg-soft: #3b1d1a;
+	--mc-warn: #e8b36a;
+	--mc-warn-soft: #33270f;
+	--mc-mark: #5b4c12;
+	--mc-toast: #2b2d29;
+	--mc-on-toast: #f2ece0;
+	--mc-scrim: rgba(0, 0, 0, 0.6);
+	--mc-shadow: 0 12px 32px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.4);
+	--mc-focus: #f2ece0;
+}
+
+/* ---------------------------------------------------------------- Mileage street maps (MapLibre, ui/src/components/mileage/map-style.ts)
+   The map is drawn from the tokens above (land between the frame and the text, roads toward the sheet,
+   labels in the muted ink); these two quiet hues are pulled toward the land there, so the route (the
+   accent) stays the only colour that reads (the route is ink or bone, the strongest mark there). One
+   pair per mode. */
+:root {
+	--mc-map-water: #8fb4cc;
+	--mc-map-park: #a9c6ae;
+}
+html[data-mode="dark"] {
+	--mc-map-water: #4f7186;
+	--mc-map-park: #4f6b55;
+}

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en" data-mode="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Grip</title>
+  <meta name="theme-color" content="#dcd4c3" />
+  <link rel="preload" href="/fonts/instrument-sans.woff2" as="font" type="font/woff2" crossorigin />
+  <!--
+    Appearance (src/lib/theme.ts) before first paint, so a Dark page never flashes Light. One theme,
+    Grip: a stored mc-theme is an older build's and is neither read nor touched.
+    Keep the key and the frame colours in step with lib/theme.ts.
+  -->
+  <script>
+    (function () {
+      try {
+        if (localStorage.getItem("mc-appearance") !== "dark") return;
+      } catch (e) {
+        return;
+      }
+      var r = document.documentElement;
+      r.setAttribute("data-mode", "dark");
+      r.classList.add("dark");
+      document.querySelector('meta[name="theme-color"]').setAttribute("content", "#080908");
+    })();
+  </script>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=grip" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=grip" />
+  <meta name="description" content="Fast, intelligent email inbox" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Grip" />
+</head>
+<body class="antialiased">
+  <div id="app"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

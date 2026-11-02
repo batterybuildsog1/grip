@@ -1,0 +1,23 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "mailclaw-ui",
+	"pages_build_output_dir": "dist",
+	// SPA: serve index.html for all routes (client-side routing)
+	"not_found_handling": "single-page-application",
+	"compatibility_date": "2025-07-15",
+	// No secrets: the proxy forwards the Cloudflare Access JWT and the Worker verifies it (ticket 09).
+	// Vars:
+	// ACCESS_*: the origin verifies the Cloudflare Access JWT itself (functions/_middleware.ts);
+	// same values as the Worker's. Unset = every request but the two public paths is 403.
+	"vars": {
+		"ACCESS_TEAM_DOMAIN": "access.example",
+		"ACCESS_AUD": "REPLACE_WITH_YOUR_SETTING",
+		"WORKER_URL": "https://worker.example.org"
+	},
+	// Service binding: Pages Function calls the mailclaw Worker via true internal
+	// fetch (no public TLS hop). The Pages Function uses env.API.fetch() when
+	// present, otherwise falls back to fetch(env.WORKER_URL).
+	"services": [
+		{ "binding": "API", "service": "mailclaw" }
+	]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "mailclaw-ui",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev:vite": "vite",
+    "build": "vite build",
+    "preview": "wrangler pages dev dist",
+    "deploy": "node ../scripts/deploy.mjs --ui"
+  },
+  "dependencies": {
+    "@protomaps/basemaps": "^5",
+    "idb": "^8.0.3",
+    "maplibre-gl": "^5.24.0",
+    "pmtiles": "^4",
+    "solid-js": "^1.9.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@unocss/preset-wind": "^66.1.1",
+    "@unocss/transformer-directives": "^66.1.1",
+    "typescript": "^5.8.3",
+    "unocss": "^66.1.1",
+    "vite": "^6.3.5",
+    "vite-plugin-pwa": "^1.2.0",
+    "vite-plugin-solid": "^2.11.6",
+    "wrangler": "^4.24.4"
+  }
+}

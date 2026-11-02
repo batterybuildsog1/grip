@@ -1,0 +1,18 @@
+Fonts bundled for the one theme, Grip (served from /fonts/, no CDN at runtime): Instrument Sans + Literata.
+Both are under the SIL Open Font
+License 1.1 (text beside each file): free to use, bundle and redistribute with software, including
+commercially; not to be sold on their own.
+
+instrument-sans.woff2   Instrument Sans, variable wdth 75-100 / wght 400-700, Latin subset. Version 1.000,
+                        Rodrigo Fuenzalida, Jordan Egstad. Grip (web UI).
+                        Downloaded 2026-10-26 from https://fonts.gstatic.com/s/instrumentsans/v4/pxicypc9vsFDm051Uf6KVwgkfoSbT2lBgGygpg.woff2
+                        (Google Fonts css2 API, latin subset). Upstream: https://github.com/Instrument/instrument-sans
+                        Licence: OFL-instrument-sans.txt (https://github.com/google/fonts/blob/main/ofl/instrumentsans/OFL.txt)
+literata.woff2          Literata, variable opsz 7-72 / wght 200-900, Latin subset. Version 3.103, TypeTogether.
+                        Grip (web message bodies; also the stand-in for New York where a browser cannot reach it).
+                        Downloaded 2026-10-26 from https://fonts.gstatic.com/s/literata/v40/or3hQ6P12-iJxAIgLYTwJrUXnTPm.woff2
+                        (Google Fonts css2 API, latin subset). Upstream: https://github.com/googlefonts/literata
+                        Licence: OFL-literata.txt (https://github.com/google/fonts/blob/main/ofl/literata/OFL.txt)
+
+Apple's SF Pro and New York are named in font stacks only; they are never copied here (Apple's licence
+does not allow redistribution).

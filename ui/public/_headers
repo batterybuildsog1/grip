@@ -1,0 +1,49 @@
+# Cloudflare Pages _headers: cache policy for fast loads.
+# Docs: https://developers.cloudflare.com/pages/configuration/headers/
+
+# Hashed assets: filename contains a content hash, so they can be cached forever.
+# Vite emits assets like /assets/index-O4Quyf1i.js — any change produces a new hash.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Static icons/fonts under public/ (no content hash). One week, revalidate with ETag.
+/favicon.svg
+  Cache-Control: public, max-age=604800
+/apple-touch-icon.png
+  Cache-Control: public, max-age=604800
+/icon-*.png
+  Cache-Control: public, max-age=604800
+/icon.svg
+  Cache-Control: public, max-age=604800
+
+# Web manifest: short cache, but allow edge reuse.
+/manifest.webmanifest
+  Cache-Control: public, max-age=300
+
+# Service worker script must revalidate on every update check. If Cloudflare
+# keeps this stale, clients can remain pinned to an older app shell after deploy.
+/sw.js
+  Cache-Control: no-cache, max-age=0, must-revalidate
+  CDN-Cache-Control: no-cache
+
+# Root HTML: edge cache for 60s with stale-while-revalidate.
+#
+# Pages respects `s-maxage` only sporadically for HTML (defaults to DYNAMIC).
+# Cloudflare-specific `CDN-Cache-Control` is the hard directive: it tells
+# Cloudflare's CDN to cache for 60s regardless of what browser-facing
+# Cache-Control says. Together this gives:
+#   - browsers revalidate every visit (no stale asset references after deploy)
+#   - Cloudflare edge returns HTML in <20ms for the 60s window
+#   - stale-while-revalidate lets edge serve old HTML while fetching fresh
+#     for up to an hour in the background
+# Pages redeploys automatically invalidate the edge cache, so this is safe.
+/
+  Cache-Control: public, max-age=0, s-maxage=300, stale-while-revalidate=86400
+  CDN-Cache-Control: public, max-age=300, stale-while-revalidate=86400
+/index.html
+  Cache-Control: public, max-age=0, s-maxage=300, stale-while-revalidate=86400
+  CDN-Cache-Control: public, max-age=300, stale-while-revalidate=86400
+
+# API proxy endpoints must NEVER be cached (Pages Function dynamic routes).
+/api/*
+  Cache-Control: private, no-store

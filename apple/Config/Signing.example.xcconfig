@@ -1,0 +1,6 @@
+// Copy to Signing.local.xcconfig (gitignored) for device and App Store work and put your own
+// Apple Developer team ID below. Never commit certificates, private keys, profiles or credentials.
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+// Both platforms ship through the App Store (one record).

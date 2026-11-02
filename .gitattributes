@@ -1,0 +1,3 @@
+# Synthetic export evidence keeps its original bytes (RFC 4180 CSV uses CRLF).
+tests/e2e/artifacts/mileage-*/*.csv -text whitespace=cr-at-eol
+tests/e2e/artifacts/mileage-*/*.pdf binary

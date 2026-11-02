@@ -1,0 +1,65 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "mailclaw",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-07-15",
+	"observability": {
+		"enabled": true
+	},
+	"d1_databases": [
+		{
+			"binding": "D1",
+			"database_name": "mailclaw-d1",
+			"database_id": "REPLACE_WITH_YOUR_DATABASE_ID",
+			"remote": false
+		},
+		{
+			"binding": "MILEAGE_D1",
+			"database_name": "mailclaw-mileage",
+			"database_id": "REPLACE_WITH_YOUR_DATABASE_ID",
+			"remote": false
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "ATTACHMENTS",
+			"bucket_name": "mailclaw-attachments"
+		}
+	],
+	// Cloudflare Email Service (Email Sending). Only domains onboarded in the
+	// dashboard AND listed in EMAIL_PROVIDERS_JSON actually route here.
+	"send_email": [
+		{
+			"name": "EMAIL"
+		}
+	],
+	// Deployment-specific settings (which domains send through Cloudflare Email Service, From
+	// display names, forwarded-in Gmail owners, the Anthropic gateway) live on the deployed
+	// Worker, not in this file: set them with the dashboard or `wrangler deploy --var`. keep_vars
+	// makes every deploy keep them instead of deleting vars missing from here.
+	// Names, shapes and examples: .dev.vars.example.
+	"keep_vars": true,
+	// Kept here, unlike the settings above, because the code that reads them must never deploy
+	// without them (ticket 09, 2026-10-22): MAIL_DOMAINS is the domain scope (empty = any From
+	// domain allowed); ACCESS_* is how the Worker believes the web's Cloudflare Access JWT (unset =
+	// the web is locked out). ACCESS_AUD is the "MailClaw" Access app's AUD tag, observed as the
+	// `aud` claim of its CF_Authorization cookie; it changes only if that app is recreated.
+	"vars": {
+		"MAIL_DOMAINS": "example.org",
+		"ACCESS_TEAM_DOMAIN": "access.example",
+		"ACCESS_AUD": "REPLACE_WITH_YOUR_SETTING",
+		"MILEAGE_OWNER_EMAILS": ""
+	},
+	"triggers": {
+		// Hourly. Tasks (raw replay, auto-read, purges, etc.) are
+		// gated by shouldRun() in src/agent/cron.ts at their own ~6-10h
+		// cadence. The 10-minute tick served only the deleted Worker IMAP
+		// poller (external IMAP mail arrives through an importer → /api/emails/import-raw).
+		"crons": ["0 * * * *"]
+	},
+	"workers_dev": true,
+	"preview_urls": false,
+	"placement": {
+		"mode": "smart"
+	}
+}

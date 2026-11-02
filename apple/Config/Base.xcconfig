@@ -1,0 +1,25 @@
+// Shared build settings for every target (project.yml points here).
+//
+// Signing: simulator and local macOS test builds are signed ad hoc and need no team.
+// For a device build, create the gitignored Config/Signing.local.xcconfig with:
+//   DEVELOPMENT_TEAM = <your team id>
+//   CODE_SIGN_IDENTITY = Apple Development
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+// Another server for this build (Info.plist MCServerURL); empty is ServerConfig.hosted. Users never
+// see it. On the command line: xcodebuild MAILCLAW_SERVER_URL=https://…; in an xcconfig, write
+// "https:/$()/…" so "//" does not start a comment.
+MAILCLAW_SERVER_URL =
+
+// Public source builds fail closed until the operator supplies their own distribution metadata.
+GRIP_DIRECTORY_URL =
+GRIP_DIRECTORY_PUBLIC_KEYS = {}
+GRIP_HOSTED_ORIGIN =
+GRIP_DEMO_ORIGIN =
+GRIP_PRIVACY_URL =
+GRIP_SUPPORT_URL =
+GRIP_PILOT_OWNER_EMAIL =
+#include? "Production.production.private.xcconfig"
+#include? "Signing.local.xcconfig"

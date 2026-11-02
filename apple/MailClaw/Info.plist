@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Operator distribution metadata; Config/Production.production.private.xcconfig is local. -->
+    <key>GripDirectoryURL</key><string>$(GRIP_DIRECTORY_URL)</string>
+    <key>GripDirectoryPublicKeys</key><string>$(GRIP_DIRECTORY_PUBLIC_KEYS)</string>
+    <key>GripHostedOrigin</key><string>$(GRIP_HOSTED_ORIGIN)</string>
+    <key>GripDemoOrigin</key><string>$(GRIP_DEMO_ORIGIN)</string>
+    <key>GripPrivacyURL</key><string>$(GRIP_PRIVACY_URL)</string>
+    <key>GripSupportURL</key><string>$(GRIP_SUPPORT_URL)</string>
+    <key>GripPilotOwnerEmail</key><string>$(GRIP_PILOT_OWNER_EMAIL)</string>
+	<!-- A build's own server (Config/Base.xcconfig); empty is ServerConfig.hosted. -->
+	<key>MCServerURL</key>
+	<string>$(MAILCLAW_SERVER_URL)</string>
+	<!-- The app and its notification extension share one device-only Keychain group (the session). -->
+	<key>MCSharedKeychainGroup</key>
+	<string>$(AppIdentifierPrefix)$(MAILCLAW_BUNDLE_ID).shared</string>
+	<key>MCAPNsEnvironment</key>
+	<string>$(APNS_ENVIRONMENT)</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>When you turn on Lock Grip, Face ID unlocks your mail.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Mileage records your drives: Grip uses location to measure driving distance and record each trip's route.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Mileage records every drive, even while Grip is closed: background location detects when a drive starts and ends. Trips and their routes sync to your Grip account.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Mileage uses motion to tell driving from walking. It never determines a trip's business purpose.</string>
+	<key>UIBackgroundModes</key>
+	<array><string>location</string></array>
+	<!-- Merged with the generated Info.plist. Plain-http images in mail load only after
+	     "Load images"; the content rule list and CSP in EmailDocument gate every web load. -->
+	<!-- NSAllowsLocalNetworking: plain http only to local hosts (127.0.0.1, .local), for the E2E
+	     fakes: the compose write sink (MC_WRITE_SINK), the search and triage fixture servers.
+	     mail.business.example stays https. -->
+
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

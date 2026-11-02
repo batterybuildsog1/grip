@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!--
+    Grip (design-explore-2026-10-30 concept 3, the Apple app icon): black talons come out of the dark
+    and bite into a bone envelope. Full bleed: the OS or generate-icons.sh rounds the corners.
+  -->
+  <rect width="1024" height="1024" fill="#141614"/>
+  <rect x="150" y="330" width="724" height="470" fill="#f2ece0"/>
+  <path d="M150,330 L874,330 L512,620 Z" fill="#d6cebd"/>
+  <path d="M388.0,150.0 A274.9,274.9 0 0 1 248.0,560.0 A154.1,154.1 0 0 0 326.5,330.1 Z" fill="#141614"/>
+  <path d="M582.0,150.0 A274.9,274.9 0 0 1 442.0,560.0 A154.1,154.1 0 0 0 520.5,330.1 Z" fill="#141614"/>
+  <path d="M776.0,150.0 A274.9,274.9 0 0 1 636.0,560.0 A154.1,154.1 0 0 0 714.5,330.1 Z" fill="#141614"/>
+</svg>

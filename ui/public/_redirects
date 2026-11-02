@@ -1,0 +1,17 @@
+# Prevent Cloudflare Pages from falling back to index.html for missing
+# static assets. Without this, a stale browser referencing a prior
+# build's JS hash (e.g. /assets/index-OLDHASH.js after a new deploy)
+# gets the SPA fallback HTML instead of a 404 — and the browser's
+# module-script strict-MIME check rejects the response with the error
+#
+#   Failed to load module script: Expected a JavaScript-or-Wasm module
+#   script but the server responded with a MIME type of "text/html"
+#
+# leaving the user with a blank page until they hard-reload.
+# Explicit 404 lets the browser retry + the SW's NetworkFirst pull a
+# fresh index.html.
+
+/assets/*  /404  404
+
+# All other routes fall through to Cloudflare Pages' default static
+# file serving, then the SPA index.html fallback.

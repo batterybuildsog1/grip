@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!--
+    The Grip for a browser tab, on the 16 px grid: icon.svg's envelope widened to 14 x 9 px and its
+    talons (the same curves, 1.24x) set 4 px apart, so each bites as a 2 px tooth at 16 px. No flap:
+    at 16 px its grey runs into the talon tips. Browsers draw this at 16 and 32 px from one raster.
+  -->
+  <clipPath id="envelope"><rect x="1" y="5" width="14" height="9"/></clipPath>
+  <rect width="16" height="16" rx="3" fill="#141614"/>
+  <rect x="1" y="5" width="14" height="9" fill="#f2ece0"/>
+  <g clip-path="url(#envelope)" fill="#141614">
+    <path d="M5.18,1.52 A5.32,5.32 0 0 1 2.48,9.45 A2.98,2.98 0 0 0 3.99,5 Z"/>
+    <path d="M9.18,1.52 A5.32,5.32 0 0 1 6.48,9.45 A2.98,2.98 0 0 0 7.99,5 Z"/>
+    <path d="M13.18,1.52 A5.32,5.32 0 0 1 10.48,9.45 A2.98,2.98 0 0 0 11.99,5 Z"/>
+  </g>
+</svg>

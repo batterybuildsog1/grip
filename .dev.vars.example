@@ -1,0 +1,86 @@
+# MailClaw Worker settings: names, shapes and example values. Nothing here is real.
+# Local dev: copy to .dev.vars (gitignored). Production: secrets with `wrangler secret put NAME`,
+# plain settings in the dashboard (Worker > Settings > Variables) or `wrangler deploy --var`;
+# wrangler.jsonc sets keep_vars, so deploys keep them.
+
+# --- Secrets ---------------------------------------------------------------------------------
+# Super-token for the CLI, scripts and integrations (docs/ROTATION.md before changing it).
+API_TOKEN=replace-with-openssl-rand-hex-32
+# HMAC key for signed attachment download links.
+ATTACHMENT_LINK_SECRET=replace-with-openssl-rand-hex-32
+# Key for ANTHROPIC_BASE_URL (chat and category feedback).
+ANTHROPIC_API_KEY=replace-me
+# The old API_TOKEN, accepted (and logged) only during a rotation grace period (docs/ROTATION.md).
+# API_TOKEN_PREVIOUS=
+# SMTP per sender domain (implicit TLS, port 465); wins over EMAIL_PROVIDERS_JSON for listed domains.
+# SMTP_ACCOUNTS_JSON={"example.org":{"host":"smtp.example.org","port":465,"username":"you@example.org","password":"replace-me"}}
+# Web push (VAPID key pair, base64url, e.g. from `npx web-push generate-vapid-keys`).
+# VAPID_PUBLIC_KEY=replace-me
+# VAPID_PRIVATE_KEY=replace-me
+
+# --- Plain settings in wrangler.jsonc (deploy with the code) -----------------------------------
+# Domains this Worker receives for (catch-all) and may send from. Empty = any From domain.
+MAIL_DOMAINS=example.com,example.org
+# Cloudflare Access in front of the web UI: the team, and the Access app's AUD tag. The web's
+# identity is the Access JWT; unset = every Access JWT is refused.
+ACCESS_TEAM_DOMAIN=https://access.example
+ACCESS_AUD=replace-with-the-access-app-aud-tag
+
+# --- Plain settings (kept on the deployed Worker) ----------------------------------------------
+# Cloudflare Access service tokens that act as a person on the web: {"<client id>": "<users.email>"}.
+# The key is the token's full client id (the JWT's common_name, "<32 hex>.access"); only listed
+# tokens are admitted, with that user's grants. Unlisted tokens get 403 NOT_A_PERSON. Unset = none.
+ACCESS_SERVICE_TOKENS_JSON={"REPLACE_WITH_OPAQUE_ID.access":"you@example.org"}
+# Per-domain send provider (Cloudflare Email Service). A domain in neither this nor
+# SMTP_ACCOUNTS_JSON cannot send (PROVIDER_NOT_CONFIGURED).
+EMAIL_PROVIDERS_JSON={"example.com":"cloudflare"}
+# From display name per sender address (callers pass bare addresses).
+SENDER_NAMES_JSON={"you@example.com":"Your Name"}
+# Someone whose Gmail is forwarded into one of these mailboxes gets their own view.
+FORWARDED_FOR_JSON={"someone@example.com":"Name"}
+# Home Alerts sub-folders: a sender rule filing mail under home_alerts gets the label of its
+# sender's domain (or a parent domain). Unset = Home Alerts has no sub-folders.
+HOME_ALERTS_JSON=[{"domain":"sensor-vendor.example","label":"Customer — Sensor"}]
+# Morning report (src/services/morning-report.ts): sent on the first hourly tick at or after
+# `hour` local time. Unset = no report.
+MORNING_REPORT_JSON={"from":"reports@example.com","to":"you@example.org","time_zone":"UTC","hour":6}
+# Per-person auto-read (src/database/d1.ts, the hourly auto_mark_read cron): unread inbound mail
+# from `from`, or forwarded in for `for` (a FORWARDED_FOR_JSON address: that person's own view), goes
+# read `days` after it arrived, whatever its category's own wait; mail kept unread by hand stays
+# unread. Unset = none; an invalid value is logged and ignored.
+AUTO_READ_SENDERS_JSON=[{"from":"someone@example.com","days":3},{"for":"someone@example.com","days":3}]
+# Anthropic Messages endpoint base (a compatible gateway); unset = https://api.anthropic.com
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+# Forwarding aliases: mail to the key is filed as if sent to the value.
+# EMAIL_FORWARDING_MAP={"alias@example.com":"you@example.com"}
+# If set, only these From addresses may send (CSV).
+# ALLOWED_SENDERS=you@example.com,noreply@example.com
+# Compose feature flag ("1"/"true" to enable): the rich-text editor.
+# COMPOSE_RTE_ENABLED=1
+# Browser origins allowed by CORS, and the UI origin used in links.
+ALLOWED_ORIGINS=http://localhost:8788
+UI_ORIGIN=http://localhost:8788
+# Review/demo instance (release 1.0 SPEC §4). "record": sends are stored in Sent, nothing is
+# transmitted. Unset or "live" sends; anything else refuses to send (SEND_MODE_INVALID).
+# SEND_MODE=record
+# Built-in trip companies. Unset/[] = Personal only. Invalid JSON answers 503.
+# MILEAGE_COMPANIES_JSON=[{"id":"brightline","name":"Brightline Builders","treatment":"business"},{"id":"harborview","name":"Harborview Labs","treatment":"reimbursement"}]
+
+# Owner aliases on MAIL_DOMAINS. Empty = no implicit local-part ownership.
+# OWNER_LOCAL_PARTS=you
+# Extra protected domains; MAIL_DOMAINS are always protected.
+# PROTECTED_SENDER_DOMAINS=partner.example.org
+# Optional report identity (empty lists by default); names are escaped before regex use.
+# MORNING_REPORT_IDENTITY_JSON={"names":["Your Name"],"attention_names":["Your"],"support_addresses":["support@example.org"]}
+# Optional automation policy. Off by default, restricted to MAIL_DOMAINS.
+# SYSTEM_MAIL_RULES_JSON=[{"recipient_prefix":"you+automation-"},{"sender_local_parts":["bot"],"subject_words":["project","e2e"]}]
+# Push requires your own topic as well as APNS credentials.
+# APNS_TOPIC=org.example.grip
+
+# Optional legacy API/sorter vocabulary, otherwise owner_threads_12m / Owner writes.
+# MEMORY_MAP_PRESENTATION_JSON={"counter_field":"owner_threads_12m","writes_label":"Owner writes"}
+
+# Morning-report fallback and empty mileage report zone; default UTC. Recorded trips carry their own zone.
+# INSTANCE_TIME_ZONE=UTC
+# Optional API-token-only send failure injection for e2e(+tag) recipients on this domain.
+# SEND_TEST_DOMAIN=example.org
