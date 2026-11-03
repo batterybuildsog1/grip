@@ -77,7 +77,11 @@ struct MessageBox: View {
 	}
 
 	private var closedLine: some View {
-		let sender = Text(people.sender(email)).fontWeight(unread ? .bold : .semibold)
+		// A saved draft says so closed too: without its mark the line read as a sent message.
+		let sender = HStack(alignment: .firstTextBaseline, spacing: 6) {
+			draftMark
+			Text(people.sender(email)).fontWeight(unread ? .bold : .semibold)
+		}
 		let line = Text(ThreadText.firstLine(email, parts: parts)).foregroundStyle(.mcMuted)
 		let date = Text(ThreadText.shortDate(email.date)).font(.subheadline).foregroundStyle(.mcMuted)
 		return Group {

@@ -505,10 +505,11 @@ function citedOf(t: Trip, cited: Map<string, Proposal>): Proposal[] {
 }
 /** Short words for an Apple address with no name: "100 Example Street, Springfield" (street and city). */
 const shortAddress = (address: string) => address.split(/,\s*/).slice(0, 2).join(", ");
-function endpoint(
+/** One end's name and address: the screen's (trip view) and the exports' (`endWords`) one rule. */
+export function endpoint(
 	c: Counted,
 	which: "start" | "end",
-	ctx: ViewContext,
+	ctx: Pick<ViewContext, "places" | "addresses" | "cited">,
 	shownGuess: Proposal | null,
 ): Endpoint {
 	const t = c.trip;
@@ -540,6 +541,15 @@ function endpoint(
 		name_source: "coordinates",
 		name_basis: null,
 	};
+}
+/**
+ * An end as an export prints it, in the trip sheet's words: the name, then " · " and Apple's full address
+ * ("Home · 214 Juniper Ln, Anytown, UT 84000"). Apple's short address and coordinates are not names;
+ * nothing known is "" (ux-s-p0-5).
+ */
+export function endWords(e: Endpoint): string {
+	const name = e.name_source === "address" || e.name_source === "coordinates" ? null : e.name;
+	return [name, e.address].filter(Boolean).join(" · ");
 }
 /** A drive back: right after the trip before it on the same day, from where that trip ended, to a saved place or its start. */
 export function returnPairs(counted: Counted[], places: Place[]): Map<string, string> {

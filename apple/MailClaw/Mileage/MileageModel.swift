@@ -74,8 +74,18 @@ final class MileageModel {
         return false
         #endif
     }
+    /// Drives are recorded only on an iPhone (iPad/Mac UX walk P1-2, 2026-11-02): one phone in the car, one copy of
+    /// each drive. An iPad or a Mac signed in to the same account shows, files and exports the iPhone's trips and
+    /// never asks for location or motion. An iPad app on a Mac or a Vision Pro is `.pad` too.
+    static var recordsHere: Bool {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+        #else
+        false
+        #endif
+    }
     var captureAvailable: Bool {
-        guard let store, !notOwner, !storageFailed else { return false }
+        guard Self.recordsHere, let store, !notOwner, !storageFailed else { return false }
         return OfflinePilot.enabled || (store.value.syncCursor != nil && (session != nil || captureOnly))
     }
     private var captureOnly = false
@@ -181,7 +191,7 @@ final class MileageModel {
     /// An unavailable Keychain is not sign-out. Only the non-secret marker can identify capture.
     private func restoreCaptureOnly() {
         #if os(iOS)
-        guard !Self.protectedDataAvailable, store == nil else { return }
+        guard Self.recordsHere, !Self.protectedDataAvailable, store == nil else { return }
         do {
             guard let owner = try captureOwner() else { location.stop(); return }
             guard FileManager.default.fileExists(atPath: root.appendingPathComponent(owner + ".sqlite").path) else {
@@ -214,6 +224,12 @@ final class MileageModel {
         location.onHealth = { [weak self] in self?.health = $0; self?.writePilotStatus() }
         location.onPermission = { [weak self] in self?.permissionLost = $0 }
         location.onCircle = { [weak self] in self?.circle = $0 }
+        if !Self.recordsHere {
+            // An iPad that ran build 12 recorded: its significant-change and visit monitoring and parked-car circle
+            // outlive an update and would keep waking Grip for drives. Stop them and drop its marker, once per launch.
+            do { try removeCaptureOwner() } catch { print("Mileage: capture-owner marker not removed. \(error.localizedDescription)") }
+            location.stop()
+        }
         #endif
         if OfflinePilot.enabled {
             do { try open(owner: OfflinePilot.owner) }

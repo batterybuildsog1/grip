@@ -11,9 +11,14 @@ struct ComposeView: View {
 	let done: () -> Void
 	@State private var importing = false
 	@FocusState private var bodyFocused: Bool
+	@Environment(\.dynamicTypeSize) private var typeSize
 	/// The label column: "Subject" fits at the default size; a label never wraps or truncates (it
 	/// wrapped as "Sub-ject" at 56, iPhone r1-08), a wider one only pushes its own field over.
 	@ScaledMetric(relativeTo: .body) private var labelWidth: CGFloat = 66
+
+	/// At accessibility sizes each label sits above its value and every recipient shows whole: beside
+	/// a 200 pt label column the rows ran off both edges at AX5 (iPhone walkthrough 2026-11-02, P1-4).
+	private var stacks: Bool { typeSize.isAccessibilitySize }
 
 	var body: some View {
 		NavigationStack {
@@ -29,12 +34,18 @@ struct ComposeView: View {
 							}
 							if !model.senders.contains(model.from) { MenuChoice(title: model.from, current: true) {} }
 						} label: {
-							MenuLabel(text: model.from, ink: .mcAccent)
+							MenuLabel(text: model.from, ink: .mcAccent, address: true)
 						}
 						.menuStyle(.button)
 						.buttonStyle(.plain)
 						.menuIndicator(.hidden)
+						#if os(macOS)
 						.fixedSize()
+						#else
+						// Its own width, up to the row's: a longer address wraps after "@" or ".", where a
+						// fixed one pushed the whole form off both edges (P1-4).
+						.fixedSize(horizontal: false, vertical: true)
+						#endif
 						.accessibilityLabel("From")
 						.accessibilityValue(model.from)
 						.accessibilityIdentifier("compose-from")
@@ -140,17 +151,23 @@ struct ComposeView: View {
 		}
 	}
 
+	/// A label and its field on one row; at accessibility sizes the label above and each part of the
+	/// field under it (one layout switched, so a field keeps its focus and words).
 	private func row<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-		HStack(alignment: .firstTextBaseline, spacing: 12) {
+		let layout = stacks
+			? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+			: AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+		return layout {
 			Text(label)
 				.foregroundStyle(.mcMuted)
 				.lineLimit(1)
 				.fixedSize()
-				.frame(minWidth: labelWidth, alignment: .leading)
+				.frame(minWidth: stacks ? nil : labelWidth, alignment: .leading)
 				.accessibilityIdentifier("compose-label-\(label.lowercased())")
 			content()
 		}
 		.padding(.horizontal, 16)
+		.padding(.vertical, stacks ? 10 : 0)
 		.frame(minHeight: 48)
 	}
 
@@ -158,15 +175,17 @@ struct ComposeView: View {
 	@ViewBuilder private var recipients: some View {
 		if model.showsChips {
 			row("To") {
-				ScrollView(.horizontal, showsIndicators: false) {
-					HStack(spacing: 6) {
-						ForEach(model.chips) { chip in
-							Text("\(Text(chip.name).fontWeight(.medium)) \(Text(chip.address).foregroundStyle(.mcMuted))")
-								.font(.subheadline)
-								.lineLimit(1)
-								.padding(.horizontal, 10)
-								.padding(.vertical, 4)
-								.background(.mcRaised, in: Capsule())
+				Group {
+					if stacks {
+						// Each person whole, one under another: a sideways row showed one cut name.
+						VStack(alignment: .leading, spacing: 6) {
+							ForEach(model.chips) { chip in self.chip(chip) }
+						}
+					} else {
+						ScrollView(.horizontal, showsIndicators: false) {
+							HStack(spacing: 6) {
+								ForEach(model.chips) { chip in self.chip(chip) }
+							}
 						}
 					}
 				}
@@ -197,6 +216,19 @@ struct ComposeView: View {
 				row("Bcc") { address($model.bcc, "compose-bcc") }
 			}
 		}
+	}
+
+	/// One person on the reply: name and address; at accessibility sizes it wraps between words and
+	/// after the address's "@" and ".".
+	private func chip(_ chip: ComposeModel.Chip) -> some View {
+		Text("\(Text(chip.name).fontWeight(.medium)) \(Text(chip.address.wrappingAtAddressSeams).foregroundStyle(.mcMuted))")
+			.font(.subheadline)
+			.lineLimit(stacks ? nil : 1)
+			.fixedSize(horizontal: false, vertical: stacks)
+			.padding(.horizontal, 10)
+			.padding(.vertical, 4)
+			.background(.mcRaised, in: stacks ? AnyShape(MCCorner.control.rect) : AnyShape(Capsule()))
+			.accessibilityLabel("\(chip.name) \(chip.address)")
 	}
 
 	private func address(_ text: Binding<String>, _ identifier: String) -> some View {
@@ -304,6 +336,32 @@ struct ComposeView: View {
 		#else
 		false
 		#endif
+	}
+}
+
+extension String {
+	/// Drawn so a line may break after an address's "@" and each of its ".", never inside a name or a
+	/// domain label (zero-width spaces in each word holding "@"; other words untouched). At AX5 one
+	/// address is wider than any iPhone. For drawing only: never stored, sent or spoken.
+	var wrappingAtAddressSeams: String {
+		guard contains("@") else { return self }
+		var drawn = "", word = ""
+		func flush() {
+			drawn += word.contains("@")
+				? word.replacingOccurrences(of: "@", with: "@\u{200B}").replacingOccurrences(of: ".", with: ".\u{200B}")
+				: word
+			word = ""
+		}
+		for character in self {
+			if character.isWhitespace {
+				flush()
+				drawn.append(character)
+			} else {
+				word.append(character)
+			}
+		}
+		flush()
+		return drawn
 	}
 }
 
@@ -422,7 +480,7 @@ struct ComposeWindowRoot: View {
 					.overlay(alignment: .bottom) { SendingNotice(model: model).padding(.bottom, 56) }
 					.onChange(of: model.sending) { _, state in
 						if state == .sent {
-							app.show("Sent")
+							app.sent(model)
 							dismiss()
 						}
 					}

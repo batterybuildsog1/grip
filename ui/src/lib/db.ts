@@ -414,6 +414,13 @@ function getDB(): Promise<IDBPDatabase<MailClawDB> | null> {
 
 // ── Conversation Summaries ──
 
+/**
+ * The device's rows for a browse list, newest first: one mailbox state, or none for All mail. What
+ * the server's browse leaves out is left out here too, before the offset and limit count it: Trash
+ * outside Trash, Spam outside Trash (routes/conversations.ts). A failed or slow All mail drew Trash
+ * and Spam from here (P1-4 review). A row carries the state of the last list, search or action that
+ * saw it, so this is the device's best knowledge, never another view's rows.
+ */
 export async function getCachedConversationSummaries(
 	mailboxState?: MailboxState,
 	limit = 50,
@@ -422,51 +429,37 @@ export async function getCachedConversationSummaries(
 	await ensureConversationSummariesSeeded();
 	const db = await getDB();
 	if (!db) return [];
-
-	if (mailboxState) {
-		const tx = db.transaction("conversation_summaries", "readonly");
-		const index = tx.store.index("mailbox_state,latest_message_at");
-		const results: ConversationSummaryRecord[] = [];
-
-		// Open a cursor on the compound index, descending by received_at
-		let cursor = await index.openCursor(
-			IDBKeyRange.bound([mailboxState, 0], [mailboxState, Number.MAX_SAFE_INTEGER]),
-			"prev",
-		);
-
-		let skipped = 0;
-		while (cursor) {
-			if (skipped < offset) {
-				skipped++;
-				cursor = await cursor.continue();
-				continue;
-			}
-			if (results.length >= limit) break;
-			results.push(cursor.value);
-			cursor = await cursor.continue();
-		}
-
-		return results;
-	}
+	const listed = (row: ConversationSummaryRecord) =>
+		mailboxState === "trash" || (row.mailbox_state !== "trash" && row.category !== "spam");
 
 	const tx = db.transaction("conversation_summaries", "readonly");
-	const index = tx.store.index("latest_message_at");
+	let cursor = mailboxState
+		? await tx.store
+				.index("mailbox_state,latest_message_at")
+				.openCursor(
+					IDBKeyRange.bound([mailboxState, 0], [mailboxState, Number.MAX_SAFE_INTEGER]),
+					"prev",
+				)
+		: await tx.store.index("latest_message_at").openCursor(null, "prev");
 	const results: ConversationSummaryRecord[] = [];
-
-	let cursor = await index.openCursor(null, "prev");
 	let skipped = 0;
-	while (cursor) {
-		if (skipped < offset) {
-			skipped++;
-			cursor = await cursor.continue();
-			continue;
+	while (cursor && results.length < limit) {
+		if (listed(cursor.value)) {
+			if (skipped < offset) skipped++;
+			else results.push(cursor.value);
 		}
-		if (results.length >= limit) break;
-		results.push(cursor.value);
 		cursor = await cursor.continue();
 	}
-
 	return results;
+}
+
+/** Conversations that no longer exist (Delete forever): their device rows go. */
+export async function deleteConversationSummaries(ids: string[]): Promise<void> {
+	await ensureConversationSummariesSeeded();
+	const db = await getDB();
+	if (!db) return;
+	const tx = db.transaction("conversation_summaries", "readwrite");
+	await Promise.all([...ids.map((id) => tx.store.delete(id)), tx.done]);
 }
 
 /** One conversation's last-known row on this device (a thread that can't load still shows it). */

@@ -1,8 +1,7 @@
 // Extend CloudflareBindings with secrets not in wrangler.jsonc
 interface CloudflareBindings {
-	AI_HUB_URL?: string; // customer-isolated Responses /v1 endpoint
-	AI_HUB_KEY?: string; // the customer's own hub credential
-	AI_HUB_SEAT?: string; // grip-<AI_INSTANCE_ID>; the customer's own seat, never the operator's
+	AI_HUB_URL?: string; // the operator's AI hub, Responses /v1 endpoint (shared by every customer)
+	AI_HUB_KEY?: string; // this customer's own hub key (named grip-<AI_INSTANCE_ID> on the hub)
 	AI_BILLING_MODE?: string; // unset legacy unlimited; explicit unlimited/metered
 	AI_INSTANCE_ID?: string;
 	AI_RATE_PPM?: string; // metered price as a multiple of provider cost, in millionths (1-2,000,000)

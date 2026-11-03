@@ -45,7 +45,7 @@ extension AppModel {
 			sending = model
 		case .sent:
 			if sending === model { sending = nil }
-			show("Sent")
+			sent(model)
 		case .failed:
 			if sending === model {
 				sending = nil
@@ -61,6 +61,24 @@ extension AppModel {
 		case .preparing, .sending:
 			break
 		}
+	}
+
+	/// Sent (the sheet's and the Mac window's one path): "Sent", the list beside the thread, and the
+	/// conversation it went into reads itself again, so the reply is under the open thread now, not
+	/// at its next open (walkthrough P1-1). Only after the server sent it: Undo and a refused send
+	/// leave the thread alone. The server keeps the draft's id for the sent message.
+	func sent(_ model: ComposeModel) {
+		show("Sent")
+		refresh()
+		guard let conversation = model.request.conversationId else { return }
+		delivered = Delivery(conversationId: conversation, emailId: model.draftId)
+	}
+
+	/// One finished send (each a new value, so two replies in a row both reload).
+	struct Delivery: Equatable {
+		let conversationId: String
+		let emailId: String?
+		let id = UUID()
 	}
 
 	/// A short line above the bottom edge ("Sent", "Not sent").

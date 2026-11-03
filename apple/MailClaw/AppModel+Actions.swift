@@ -14,15 +14,29 @@ extension AppModel {
 		return visibleRows.first { $0.id == id }
 	}
 
+	/// The Archive slot's word: inside Trash it restores (walkthrough P1-3), as the row's swipe and
+	/// the bulk bar already said. Every bar, menu and key of the open conversation uses these two.
+	var archiveTitle: String { inTrash ? "Restore" : "Archive" }
+	/// The Trash slot's word: inside Trash it deletes forever, after the confirm.
+	var trashTitle: String { inTrash ? "Delete forever" : "Trash" }
+
+	/// Archive (e); inside Trash, Restore. Either opens the next conversation.
 	func archive() {
 		if bulkPicked(inTrash ? .restore : .archive) { return }
-		if let row = actionTargetRow, !inTrash { triage(.archive, [row]) }
+		if let row = actionTargetRow { archive(row) }
 	}
 
-	/// Trash; inside Trash, the Delete-forever confirm (S7).
+	func archive(_ row: ConversationRow) {
+		triage(inTrash ? .restore : .archive, [row])
+	}
+
+	/// Trash (#); inside Trash, the Delete-forever confirm (S7).
 	func trash() {
 		if !inTrash, bulkPicked(.trash) { return }
-		guard let row = actionTargetRow else { return }
+		if let row = actionTargetRow { trash(row) }
+	}
+
+	func trash(_ row: ConversationRow) {
 		if inTrash { pendingDelete = row } else { triage(.trash, [row]) }
 	}
 

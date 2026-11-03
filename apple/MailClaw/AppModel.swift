@@ -180,6 +180,9 @@ final class AppModel {
 		}
 	}
 	var notificationsDenied = false
+	/// iPhone and iPad: iOS lets Grip notify (nil until read, and in fixture runs). Account → Notifications shows On
+	/// only when this and the setting agree: it read On on iPads iOS had never asked (iPad/Mac UX walk P1-5).
+	var notificationsAllowed: Bool?
 	/// Newest Personal mail and the notes already announced (or already here at launch: the first
 	/// check of a run takes stock and announces nothing). AppModel+Notifications.swift.
 	@ObservationIgnored var announcedThrough: Int64?
@@ -200,6 +203,9 @@ final class AppModel {
 	var composer: ComposeModel?
 	var sending: ComposeModel?
 	var notice: String?
+	/// The last message a composer sent, and the conversation it went into: that conversation, when
+	/// open, reads itself again so the reply shows under it (`sent`, ThreadView).
+	var delivered: Delivery?
 	/// This identity's drafts kept on the device (DraftShelf); nil signed out.
 	private(set) var drafts: DraftShelf?
 	/// Mac: a composer to open in its own window (MacRootView opens it), e.g. from a Drafts row.
@@ -319,6 +325,15 @@ final class AppModel {
 			// Ended, or the account is being deleted (then its ledger goes too): AppModel+Account.swift.
 			Task { await self.sessionRejected() }
 		}
+	}
+
+	/// Sign-in's notification ask is over (answered, refused or never needed): the row reads iOS again, and Mileage,
+	/// which held its location and motion asks meanwhile (one system prompt at a time), asks now.
+	func notificationsAsked() {
+		#if os(iOS)
+		Task { await readNotificationPermission() }
+		mileage?.active()
+		#endif
 	}
 
 	/// Keychain is unreadable on a locked background launch. Retry synchronously on the main
@@ -831,6 +846,10 @@ final class AppModel {
 		if isActive {
 			openQueuedNotification()
 			notifications.retryRegistration()
+			#if os(iOS)
+			// Notifications may have been changed in iOS Settings while Grip was away.
+			Task { await readNotificationPermission() }
+			#endif
 		}
 		guard sync != nil, !signingOut, isActive || pollsForNotifications else { return }
 		autoRefreshTask = Task {
@@ -1132,9 +1151,10 @@ final class AppModel {
 
 	/// Archive, Trash, Restore and Read/Unread on whole conversations: the server first, then a
 	/// toast with Undo. Refused or offline, the rows come back and the toast says what didn't
-	/// happen; nothing queues. Rows that leave the list go at once. Archive and Trash of the open
-	/// conversation open the next one, on the Mac and the iPhone alike (L3; iOS Mail's default),
-	/// even where the row stays listed (All mail, search results); after the last, the list.
+	/// happen; nothing queues. Rows that leave the list go at once. Archive, Trash and (in Trash)
+	/// Restore of the open conversation open the next one, on the Mac and the iPhone alike (L3; iOS
+	/// Mail's default), even where the row stays listed (All mail, search results); after the last,
+	/// the list.
 	func triage(_ action: TriageAction, _ targets: [ConversationRow]) {
 		guard let sync, !targets.isEmpty else { return }
 		let ids = targets.map(\.id)
@@ -1143,7 +1163,7 @@ final class AppModel {
 		let shownView = view
 		let removed = rows.enumerated().filter { gone.contains($0.element.id) }.map { ($0.offset, $0.element) }
 		let wasSelected = selection
-		let advances = (action == .archive || action == .trash) && wasSelected.map(gone.contains) == true
+		let advances = [.archive, .trash, .restore].contains(action) && wasSelected.map(gone.contains) == true
 		let next = advances || leaving ? nextSelection(after: gone) : nil
 		if leaving {
 			// The Mac list's keyboard cursor moves to the row taking the removed one's place (S6).
@@ -1199,19 +1219,6 @@ final class AppModel {
 			}
 		}
 		showToast(Self.doneText(action, targets), undo: undoIt)
-	}
-
-	/// e, #, Shift-U and z on the list (the Mac's menu calls the same actions).
-	func triageKey(_ key: String) -> Bool {
-		if key == "z" { return undoLast() }
-		guard let row = actionTargetRow else { return false }
-		switch key {
-		case "e" where !inTrash: triage(.archive, [row])
-		case "#": if inTrash { pendingDelete = row } else { triage(.trash, [row]) }
-		case "U": triage(.markUnread, [row])
-		default: return false
-		}
-		return true
 	}
 
 	/// z, the toast's Undo and Edit > Undo: the last action, once.

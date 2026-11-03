@@ -25,10 +25,17 @@ private struct ChevronShape: Shape {
 struct MenuLabel: View {
 	let text: String
 	var ink: MCColor = .mcText
+	/// An address (the composer's From): wraps after its "@" and "." when the row is too narrow,
+	/// instead of one line.
+	var address = false
 
 	var body: some View {
 		HStack(spacing: 8) {
-			Text(text).lineLimit(1).foregroundStyle(ink)
+			Text(address ? text.wrappingAtAddressSeams : text)
+				.lineLimit(address ? nil : 1)
+				.fixedSize(horizontal: false, vertical: address)
+				.foregroundStyle(ink)
+				.accessibilityLabel(text)
 			Chevron().frame(width: 9, height: 5).foregroundStyle(.mcMuted)
 		}
 		.padding(.horizontal, 10)

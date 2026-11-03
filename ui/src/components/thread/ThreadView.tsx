@@ -1,11 +1,11 @@
 import "./thread.css";
 import {
 	type Component,
-	type JSX,
 	createEffect,
 	createMemo,
 	createSignal,
 	For,
+	type JSX,
 	Match,
 	on,
 	onCleanup,
@@ -17,11 +17,15 @@ import {
 import { ApiHttpError, ApiNetworkError } from "../../api/client";
 import {
 	detailAskedAt,
+	detailNumber,
+	draftLetGo,
 	forgetConversationDetail,
 	getConversationDetailCached,
 	markThreadRead,
+	threadLetGo,
 } from "../../lib/cache";
 import { type ConversationSummaryRecord, getCachedConversationSummary } from "../../lib/db";
+import { useDialogFocus } from "../../lib/dialog";
 import { endsComposition, notAShortcut } from "../../lib/shortcuts";
 import { earlierConversation } from "../../lib/thread-link";
 import {
@@ -34,7 +38,6 @@ import {
 	type TriageTarget,
 	useTriage,
 } from "../../lib/triage";
-import { useDialogFocus } from "../../lib/dialog";
 import { useApp, viewIdOf, viewTitle } from "../../store/app";
 import { columnFits, isMobile } from "../../store/responsive";
 import type {
@@ -44,17 +47,18 @@ import type {
 	MailboxState,
 } from "../../types";
 import {
+	firstLine,
 	isBulk,
 	People,
 	shortDate,
 	type TimelineItem,
 	timelinePlan,
 } from "../../utils/thread-text";
-import Menu, { MenuAction } from "../Menu";
 import InlineComposerSlot, {
 	inlineComposerOpenFor,
 	setReplyWindowThread,
 } from "../compose/InlineComposerSlot";
+import Menu, { MenuAction } from "../Menu";
 import NewsletterReader from "../NewsletterReader";
 import DeleteForever from "../triage/DeleteForever";
 import MessageBox, { canShowOriginal, originalShown, toggleOriginal } from "./MessageBox";
@@ -68,6 +72,15 @@ interface ThreadViewProps {
 
 const itemKey = (item: TimelineItem) =>
 	item.kind === "stack" ? `stack:${item.key}` : `message:${item.email.id}`;
+
+/**
+ * The thread's answer holds its drafts too (the apps read them; the newest is the thread's latest).
+ * A draft is never a message here (ux-w-p0-1): it is its composer, or one item marked Draft, drawn
+ * only from an answer asked after a window last let go of it (lib/cache: noteDraftLetGo).
+ */
+const isDraft = (email: Email) => email.mailbox_state === "draft";
+const sameIds = (a: ReadonlySet<string>, b: ReadonlySet<string>) =>
+	a.size === b.size && [...a].every((id) => b.has(id));
 
 const whenIdle = (task: () => void) => {
 	const idle = (
@@ -90,7 +103,18 @@ const whenIdle = (task: () => void) => {
 const ThreadView: Component<ThreadViewProps> = (props) => {
 	const [state, actions] = useApp();
 	const [conversation, setConversation] = createSignal<ConversationSummary | null>(null);
+	/** This thread's messages, oldest first; its drafts are apart (`drafts`). */
 	const [own, setOwn] = createSignal<Email[]>([]);
+	const [drafts, setDrafts] = createSignal<Email[]>([]);
+	/** The number (lib/cache: detailNumber) of the answer `drafts` came from. */
+	const [draftsAsked, setDraftsAsked] = createSignal(0);
+	/** The number of the answer `own` came from: an answer asked earlier never replaces it (D24),
+	 *  unless `own` holds only part of the thread and that answer holds all of it (build 13 review). */
+	const [ownAsked, setOwnAsked] = createSignal(0);
+	const [ownPartial, setOwnPartial] = createSignal(false);
+	const partial = (detail: ConversationDetailResponse) => (detail.remaining_email_count ?? 0) > 0;
+	const takesOwn = (detail: ConversationDetailResponse) =>
+		detailNumber(detail) >= ownAsked() || (ownPartial() && !partial(detail));
 	const [earlier, setEarlier] = createSignal<Email[]>([]);
 	const [focusId, setFocusId] = createSignal<string | null>(null);
 	const [loadingRest, setLoadingRest] = createSignal(false);
@@ -107,9 +131,30 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 
 	const sorted = (emails: Email[]) => [...emails].sort((a, b) => a.received_at - b.received_at);
 
+	/** The fresh answer, keeping the object of every email that did not change. */
+	const keepUnchanged = (current: Email[], fresh: Email[]) => {
+		const held = new Map(current.map((e) => [e.id, e]));
+		return sorted(fresh).map((e) => {
+			const old = held.get(e.id);
+			return old && JSON.stringify(old) === JSON.stringify(e) ? old : e;
+		});
+	};
+	/** This answer's drafts, unless the ones known came from an answer asked later (D18). */
+	const takeDrafts = (detail: ConversationDetailResponse) => {
+		const asked = detailNumber(detail);
+		if (asked < draftsAsked()) return;
+		setDraftsAsked(asked);
+		setDrafts(keepUnchanged(drafts(), detail.emails.filter(isDraft)));
+	};
+
 	const show = (detail: ConversationDetailResponse) => {
-		setConversation(detail.conversation);
-		setOwn(sorted(detail.emails));
+		if (takesOwn(detail)) {
+			setOwnAsked(Math.max(ownAsked(), detailNumber(detail)));
+			setOwnPartial(partial(detail));
+			setConversation(detail.conversation);
+			setOwn(sorted(detail.emails.filter((e) => !isDraft(e))));
+		}
+		takeDrafts(detail);
 		setFailure(null);
 	};
 
@@ -138,7 +183,11 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 		if (gen !== generation) return;
 		show(first);
 		const resolved = first.conversation.id;
-		const anchorId = first.anchor_email_id ?? first.emails.at(-1)?.id ?? null;
+		// A draft is never the anchor (the server's default is the newest message, often a draft).
+		const anchorId =
+			[first.anchor_email_id, first.emails.at(-1)?.id].find(
+				(candidate) => candidate && !first.emails.some((e) => e.id === candidate && isDraft(e)),
+			) ?? null;
 		setFocusId(anchorId);
 		if (resolved !== id || (anchorId && anchorId !== anchor)) {
 			queueMicrotask(() => actions.selectConversation(resolved, anchorId));
@@ -171,7 +220,7 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 		}
 		if (gen !== generation) return;
 		const before = await earlierConversation(full, state.meta?.allowed_senders ?? []);
-		if (gen === generation) setEarlier(before);
+		if (gen === generation) setEarlier(before.filter((e) => !isDraft(e)));
 	};
 
 	// One load per conversation; a new message id from the URL (the canonical anchor) is not a reload.
@@ -181,6 +230,10 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 			(id) => {
 				setConversation(null);
 				setOwn([]);
+				setDrafts([]);
+				setDraftsAsked(0);
+				setOwnAsked(0);
+				setOwnPartial(false);
 				setEarlier([]);
 				setOpenStacks(new Set<string>());
 				setToggled(new Map<string, boolean>());
@@ -292,13 +345,16 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 	};
 	const applyFresh = (detail: ConversationDetailResponse) => {
 		if (detail.conversation.id !== conversation()?.id) return;
+		takeDrafts(detail);
+		if (!takesOwn(detail)) return;
+		setOwnAsked(Math.max(ownAsked(), detailNumber(detail)));
+		setOwnPartial(partial(detail));
 		setConversation(detail.conversation);
 		const current = own();
-		const held = new Map(current.map((e) => [e.id, e]));
-		const next = sorted(detail.emails).map((e) => {
-			const old = held.get(e.id);
-			return old && JSON.stringify(old) === JSON.stringify(e) ? old : e;
-		});
+		const next = keepUnchanged(
+			current,
+			detail.emails.filter((e) => !isDraft(e)),
+		);
 		if (next.length === current.length && next.every((e, i) => e === current[i])) return;
 		// What is open stays open: the latest stops being the latest when a reply arrives.
 		setToggled((map) => {
@@ -311,31 +367,81 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 		const el = place && messageBox(place.id);
 		if (place && el) place.scroller.scrollTop += el.getBoundingClientRect().top - place.top;
 	};
+	/** This conversation asked again (a new read) and applied. Still loading (or not downloaded):
+	 *  the load in flight, or Try again, answers, unless it was asked too early (D20). */
+	const askAgain = async (evenWhileLoading = false) => {
+		if (!conversation() || (loadingRest() && !evenWhileLoading)) return;
+		const id = props.conversationId;
+		// A draft is never the anchor: one sent or discarded since would make the thread a 404.
+		const anchor =
+			props.emailId && !drafts().some((d) => d.id === props.emailId) ? props.emailId : null;
+		const gen = generation;
+		forgetConversationDetail(id);
+		const whole = loadingRest() || own().length + drafts().length > 1;
+		const detail = await getConversationDetailCached(id, {
+			emailId: anchor,
+			load: whole ? "full" : "anchor",
+		});
+		if (gen !== generation) return;
+		const more = !whole && (detail.remaining_email_count ?? 0) > 0;
+		const fresh = more
+			? await getConversationDetailCached(id, { emailId: anchor, load: "full" })
+			: detail;
+		if (gen === generation) applyFresh(fresh);
+	};
 	createEffect(
 		on(
 			() => state.freshnessVersion,
-			() => {
-				// Still loading (or not downloaded): the load in flight, or Try again, answers.
-				if (!conversation() || loadingRest()) return;
-				const id = props.conversationId;
-				const anchor = props.emailId ?? null;
-				const gen = generation;
-				forgetConversationDetail(id);
-				const whole = own().length > 1;
-				getConversationDetailCached(id, { emailId: anchor, load: whole ? "full" : "anchor" })
-					.then(async (detail) => {
-						if (gen !== generation) return;
-						const more = !whole && (detail.remaining_email_count ?? 0) > 0;
-						const fresh = more
-							? await getConversationDetailCached(id, { emailId: anchor, load: "full" })
-							: detail;
-						if (gen === generation) applyFresh(fresh);
-					})
-					.catch(() => {});
-			},
+			() => void askAgain().catch(() => {}),
 			{ defer: true },
 		),
 	);
+
+	/* ── Drafts (ux-w-p0-1): a draft is its composer while a window holds it, else one Draft item. ── */
+
+	const heldDrafts = createMemo<ReadonlySet<string>>(
+		() => new Set(state.composeWindows.flatMap((w) => (w.draftId ? [w.draftId] : []))),
+		new Set<string>(),
+		{ equals: sameIds },
+	);
+	// What is known of a draft from an answer asked before a window let go of it (sent, discarded,
+	// closed) is not drawn (D07, D08, D17), and this thread is asked again, loading or not, as it is
+	// when a reply here let go of a draft the answer may not hold (D09, D18, D20). The let-go is
+	// noted by the store as it happens (D21), so a thread opened later asks too. A number per let-go:
+	// another one while an ask is on its way asks once more (D22). No answer (offline): not drawn.
+	const behind = createMemo(() => {
+		const asked = draftsAsked();
+		if (!conversation()) return 0;
+		const held = heldDrafts();
+		const last = Math.max(
+			threadLetGo(props.conversationId),
+			...drafts()
+				.filter((d) => !held.has(d.id))
+				.map((d) => draftLetGo(d.id)),
+		);
+		return last >= asked ? last : 0;
+	});
+	createEffect(
+		on(behind, (last) => {
+			if (last > 0) void askAgain(true).catch(() => {});
+		}),
+	);
+	const draftItems = () =>
+		drafts().filter((d) => !heldDrafts().has(d.id) && draftLetGo(d.id) < draftsAsked());
+	/** A Draft item opens its composer with the saved words: under the thread, as a reply. */
+	const openDraft = (draft: Email) => {
+		const answered =
+			own().find((e) => e.message_id && e.message_id === draft.in_reply_to) ?? replyTarget();
+		const mode = !draft.in_reply_to
+			? "forward"
+			: draft.cc_addresses.length > 0
+				? "reply-all"
+				: "reply";
+		actions.editDraft(
+			draft.id,
+			answered ? { emailId: answered.id, mode, conversationId: props.conversationId } : null,
+		);
+	};
 
 	/* ── Actions: the server first; a failure says so and changes nothing here (no offline queue). ── */
 
@@ -549,8 +655,7 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 		const email = latest();
 		return email && canShowOriginal(email, conversation()?.category ?? null) ? email : null;
 	};
-	const archiveLabel = () =>
-		isTrashed() ? "Restore" : isArchived() ? "Move to Inbox" : "Archive";
+	const archiveLabel = () => (isTrashed() ? "Restore" : isArchived() ? "Move to Inbox" : "Archive");
 	const archive = () =>
 		isTrashed() ? move("restore") : isArchived() ? moveToInbox() : move("archive");
 	const trash = () => (isTrashed() ? setConfirmingDelete(true) : move("trash"));
@@ -716,17 +821,19 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 						</div>
 
 						<Switch>
-							<Match when={failure() && own().length === 0}>
+							<Match when={failure() && own().length === 0 && drafts().length === 0}>
 								<NotDownloaded kind={failure() ?? "offline"} known={lastKnown()} onRetry={retry} />
 							</Match>
-							<Match when={own().length === 0}>
+							{/* The newest message is often the draft, the anchor the server sends first: the
+							    rest is on its way. A thread holding only a draft shows its Draft item. */}
+							<Match when={own().length === 0 && (drafts().length === 0 || loadingRest())}>
 								<div class="flex flex-col gap-2" aria-busy="true">
 									<div class="h-11 rounded-box bg-raised" />
 									<div class="h-11 rounded-box bg-raised" />
 									<div class="h-56 rounded-box bg-raised" />
 								</div>
 							</Match>
-							<Match when={own().length > 0}>
+							<Match when={own().length > 0 || drafts().length > 0}>
 								<div data-testid="thread-timeline" class="flex flex-col gap-2">
 									<For each={keys()}>
 										{(key) => {
@@ -765,6 +872,9 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 												</Switch>
 											);
 										}}
+									</For>
+									<For each={draftItems()}>
+										{(draft) => <DraftItem draft={draft} onOpen={() => openDraft(draft)} />}
 									</For>
 								</div>
 								<Show when={loadingRest()}>
@@ -885,6 +995,26 @@ const ThreadView: Component<ThreadViewProps> = (props) => {
 		</div>
 	);
 };
+
+/**
+ * A saved draft no window holds (Cancel or Close kept it, another device wrote it): one line in
+ * a closed message's shape, "Draft" in the list row's mark (text-neg) where the sender would be,
+ * then its first line. Never a message: it opens the composer with the saved words.
+ */
+const DraftItem: Component<{ draft: Email; onOpen: () => void }> = (props) => (
+	<button
+		type="button"
+		data-testid="thread-draft"
+		data-email-id={props.draft.id}
+		class="w-full grid grid-cols-[minmax(0,1fr)] md:grid-cols-[minmax(0,170px)_minmax(0,1fr)] gap-x-3.5 gap-y-0.5 items-baseline px-3.5 md:px-4 py-2.75 text-left border border-solid border-border rounded-box bg-sheet hover:border-control"
+		onClick={() => props.onOpen()}
+	>
+		<span data-testid="thread-draft-mark" class="font-semibold text-neg">
+			Draft
+		</span>
+		<span class="truncate text-muted">{firstLine(props.draft)}</span>
+	</button>
+);
 
 /** The phone's sheet of actions from the bottom (More): groups of words, Cancel last. */
 const ActionSheet: Component<{ onClose: () => void; children: JSX.Element }> = (props) => {

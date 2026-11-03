@@ -16,7 +16,7 @@ settings:
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "12"
+    CURRENT_PROJECT_VERSION: "13"
     # Override only for isolated fixture apps; distribution keeps the default identity.
     MAILCLAW_BUNDLE_ID: io.examplebusiness.mailclaw
     APNS_ENVIRONMENT: development

@@ -7,6 +7,7 @@
  */
 import { createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { ApiHttpError, api } from "../../api/client";
+import { getConversationDetailCached } from "../../lib/cache";
 import {
 	currentIdentityTag,
 	deleteLocalComposeDraft,
@@ -264,9 +265,10 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 	// The server refused this exact draft (4xx, e.g. "Invalid email address" for a half-typed To):
 	// retrying the same body can't succeed, so autosave waits for the next edit (m1-04: it posted
 	// it about once a second and said "will retry" forever).
-	const [rejectedDraft, setRejectedDraft] = createSignal<{ snapshot: string; message: string } | null>(
-		null,
-	);
+	const [rejectedDraft, setRejectedDraft] = createSignal<{
+		snapshot: string;
+		message: string;
+	} | null>(null);
 	let composeChannel: BroadcastChannel | undefined;
 	/** Tell this identity's other compose windows and tabs about a draft (never another identity's). */
 	const postToWindows = (
@@ -352,7 +354,11 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 			draftId: draftId() ?? editingDraftId(),
 			draftRevision: draftRevision(),
 			replyTo: target
-				? { emailId: target.emailId, mode: target.mode, conversationId: target.conversationId ?? null }
+				? {
+						emailId: target.emailId,
+						mode: target.mode,
+						conversationId: target.conversationId ?? null,
+					}
 				: null,
 			minimized: isMinimized(),
 			fields: {
@@ -505,13 +511,31 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 		return parseSenderName(address);
 	};
 
+	const takeOriginal = (email: Email, mode: string) => {
+		setOriginal(email);
+		if (mode !== "forward") setReplyOthers(buildReplyRecipients(email, fromOptions()).cc);
+	};
 	/** The message being answered, for chips and reply-all, when a reopened window lacks it. */
 	const loadOriginal = (target: { emailId: string; mode: string }) => {
 		void api.emails
 			.get(target.emailId)
-			.then((email) => {
-				setOriginal(email);
-				if (target.mode !== "forward") setReplyOthers(buildReplyRecipients(email, fromOptions()).cc);
+			.then((email) => takeOriginal(email, target.mode))
+			.catch(() => {});
+	};
+	/**
+	 * A saved reply opened from its conversation's row (ux-w-p1-2) knows its thread, not the message
+	 * it answers: find that by In-Reply-To in the thread, so the chips name people as Reply's do.
+	 */
+	const findOriginal = (draft: Email) => {
+		const target = replyTo();
+		if (!target?.conversationId || !draft.in_reply_to) return;
+		void getConversationDetailCached(target.conversationId, { load: "full" })
+			.then((detail) => {
+				const answered = detail.emails.find((e) => e.message_id === draft.in_reply_to);
+				const now = replyTo();
+				if (!answered || !now) return;
+				takeOriginal(answered, now.mode);
+				actions.setComposeReplyTo(windowId, { ...now, emailId: answered.id });
 			})
 			.catch(() => {});
 	};
@@ -609,7 +633,10 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 			return;
 		}
 		if (!unsaved) {
-			await applyDraftToCompose(server, { text: local.fields.text, quote: local.fields.quote ?? null });
+			await applyDraftToCompose(server, {
+				text: local.fields.text,
+				quote: local.fields.quote ?? null,
+			});
 			if (local.sendPendingAt) {
 				setError("Not sent: the page closed before it went out. Send it again when you're ready.");
 			}
@@ -1054,7 +1081,11 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 		// uses. Also stop propagation so any parent handler can't swallow it.
 		const k = e.key.toLowerCase();
 		const modDown = e.metaKey || e.ctrlKey;
-		if (modDown && e.shiftKey && (k === "y" || (!e.metaKey && e.ctrlKey && (k === "c" || k === "b")))) {
+		if (
+			modDown &&
+			e.shiftKey &&
+			(k === "y" || (!e.metaKey && e.ctrlKey && (k === "c" || k === "b")))
+		) {
 			e.preventDefault();
 			e.stopPropagation();
 			setRecipientsAsFields(true);
@@ -1198,6 +1229,12 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 					return;
 				}
 				await applyDraftToCompose(draft);
+				// Opened as the reply under its thread: the message it answers names the chips and offers
+				// Reply all, as a kept reply does. A thread's Draft item names that message; a list row
+				// only knows the draft, so the message is found from the draft's In-Reply-To.
+				const target = replyTo();
+				if (target && target.emailId !== draft.id) loadOriginal(target);
+				else findOriginal(draft);
 				requestBodyFocus();
 			} catch (e) {
 				// Auto-recover from dead ?compose=<draftId> deep links (deleted
@@ -1235,17 +1272,23 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 				// person chose stays.
 				const ownSender =
 					source.direction === "outbound"
-						? options.find((addr) => addr.toLowerCase() === (source.from_address || "").toLowerCase())
+						? options.find(
+								(addr) => addr.toLowerCase() === (source.from_address || "").toLowerCase(),
+							)
 						: undefined;
 				if (!untouched("from")) {
 					// kept as chosen
 				} else if (ownSender) {
 					setFrom(ownSender);
 				} else {
-					const sourceRecipients = [source.to_address, ...source.to_addresses, ...source.cc_addresses].map(
-						(a) => a.toLowerCase(),
+					const sourceRecipients = [
+						source.to_address,
+						...source.to_addresses,
+						...source.cc_addresses,
+					].map((a) => a.toLowerCase());
+					const matchingFrom = options.find((addr) =>
+						sourceRecipients.includes(addr.toLowerCase()),
 					);
-					const matchingFrom = options.find((addr) => sourceRecipients.includes(addr.toLowerCase()));
 					if (matchingFrom) setFrom(matchingFrom);
 				}
 
@@ -1581,7 +1624,8 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 				// Sending always snapshots a fully hydrated set. The failed/loading guards above
 				// ensure this can never replace server rows with a partial browser copy.
 				includeAttachments:
-					attachmentLoadState() === "ready" && (expectedAttachmentCount() > 0 || dirtyAttachments()),
+					attachmentLoadState() === "ready" &&
+					(expectedAttachmentCount() > 0 || dirtyAttachments()),
 				silent: true,
 				allowBootstrapSave: true,
 			});
@@ -1925,7 +1969,9 @@ export function createComposeDraft(opts: ComposeDraftOptions) {
 		try {
 			await applyDraftToCompose(conflict.latestDraft);
 		} catch (reloadError) {
-			setError(getErrorMessage(reloadError, "The latest draft's attachments could not be prepared."));
+			setError(
+				getErrorMessage(reloadError, "The latest draft's attachments could not be prepared."),
+			);
 		}
 	};
 

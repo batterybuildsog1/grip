@@ -52,8 +52,11 @@ final class MileageLocation: NSObject, @preconcurrency CLLocationManagerDelegate
     private var canAskAlways: Bool {
         manager.authorizationStatus == .notDetermined || (manager.authorizationStatus == .authorizedWhenInUse && !askedAlways)
     }
+    /// Sign-in's notification ask is out: iOS shows one system prompt at a time, so location and motion wait for its
+    /// answer, then Grip asks at once (AppModel.notificationsAsked → MileageModel.active). iPad/Mac UX walk P1-5.
+    private var anotherAskOut: Bool { NotificationCoordinator.current?.asking == true }
     func allowAlways() {
-        guard enabled, UIApplication.shared.applicationState == .active, canAskAlways else { return }
+        guard enabled, UIApplication.shared.applicationState == .active, canAskAlways, !anotherAskOut else { return }
         askedAlways = true
         // Apple's provisional-Always flow also supports the first (Not Determined) request.
         manager.requestAlwaysAuthorization(); health()
@@ -214,7 +217,8 @@ final class MileageLocation: NSObject, @preconcurrency CLLocationManagerDelegate
     private func startMotion() {
         guard enabled, !motionStarted, CMMotionActivityManager.isActivityAvailable() else { return }
         let authorization = CMMotionActivityManager.authorizationStatus()
-        guard authorization == .authorized || (authorization == .notDetermined && UIApplication.shared.applicationState == .active) else { return }
+        guard authorization == .authorized
+                || (authorization == .notDetermined && UIApplication.shared.applicationState == .active && !anotherAskOut) else { return }
         let generation = generation
         motionStarted = true
         motion.startActivityUpdates(to: .main) { [weak self] activity in

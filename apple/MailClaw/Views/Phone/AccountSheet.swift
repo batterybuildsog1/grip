@@ -1,7 +1,6 @@
 #if os(iOS)
 import MailClawKit
 import SwiftUI
-import UserNotifications
 
 /// The account sheet (design r2 §4 S1): All accounts and each address (changes the account, never
 /// the view: WD-02), sign-in and the lock (SessionSettings), AI sorting (the owner's), the app's one
@@ -16,7 +15,6 @@ struct AccountSheet: View {
 	@State private var detent: PresentationDetent = .medium
 
 	var body: some View {
-		@Bindable var model = model
 		@Bindable var theme = theme
 		NavigationStack {
 			List {
@@ -50,13 +48,29 @@ struct AccountSheet: View {
 					.listRowBackground(Rectangle().fill(.mcSheet))
 				}
 				Section {
-					// The app's one notification setting (the Mac's Settings checkbox, S6).
-					Toggle("New mail in Personal and Needs you", isOn: $model.notifyEnabled)
+					// The app's one notification setting (the Mac's Settings checkbox, S6). On only while iOS allows it
+					// too: it read On on iPads iOS had never asked (iPad/Mac UX walk P1-5). Refused, only iOS Settings
+					// can allow it, so the switch rests and Open Settings goes there.
+					Toggle("New mail in Personal and Needs you", isOn: notify)
+						.disabled(model.notificationsDenied)
 						.accessibilityIdentifier("settings-notify")
+					if model.notificationsDenied {
+						Button { openURL(URL(string: UIApplication.openNotificationSettingsURLString)!) } label: {
+							Text("Open Settings")
+								.foregroundStyle(.mcText)
+								.frame(maxWidth: .infinity, alignment: .leading)
+								.contentShape(Rectangle())
+						}
+						.accessibilityIdentifier("settings-notify-settings")
+					}
 				} header: {
 					Text("Notifications").foregroundStyle(.mcMuted)
 				} footer: {
-					Text("Newsletters, receipts and notices never notify. Sounds and lock screen follow \(UIDevice.current.model) Settings.").foregroundStyle(.mcMuted)
+					if model.notificationsDenied {
+						Text("Notifications are off for Grip in \(UIDevice.current.model) Settings.").foregroundStyle(.mcWarn)
+					} else {
+						Text("Newsletters, receipts and notices never notify. Sounds and lock screen follow \(UIDevice.current.model) Settings.").foregroundStyle(.mcMuted)
+					}
 				}
 				.listRowBackground(Rectangle().fill(.mcSheet))
 				// The theme's own segmented words, not UIKit's grey control (iphone-r2-14).
@@ -105,10 +119,18 @@ struct AccountSheet: View {
 		// A presented sheet keeps the light/dark it opened with; this one changes it, so it follows.
 		.preferredColorScheme(theme.appearance.colorScheme)
 		.accessibilityIdentifier("account-sheet")
-		.onChange(of: model.notifyEnabled) { _, on in
-			guard on else { return }
-			Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
-		}
+		// What iOS allows now: it may have changed in iOS Settings since the app last came to the front.
+		.task { await model.readNotificationPermission() }
+	}
+
+	/// The setting, shown On only once iOS is known to allow it (not read yet, or iOS never answered: Off). Fixture runs
+	/// never read iOS: the setting alone. Turning it on asks iOS if it has never asked.
+	private var notify: Binding<Bool> {
+		Binding(
+			get: { model.notifyEnabled && (model.notificationsAllowed ?? LaunchOptions.fixtureMode) },
+			set: { on in
+				if on { Task { await model.turnOnNotifications() } } else { model.notifyEnabled = false }
+			})
 	}
 
 	/// A public page: its name, opened in the browser.

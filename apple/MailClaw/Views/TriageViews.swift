@@ -8,7 +8,7 @@ extension View {
 	/// Mark as read|unread on the leading swipe (full swipe); Archive (full swipe), Trash and Mark as
 	/// read|unread on the trailing one, so either swipe changes the read state (build 4: a left swipe
 	/// that offered only Archive surprised people). Inside Trash: Restore (full swipe) and Delete
-	/// Forever, which asks first.
+	/// forever, which asks first (the thread's bar says the same, walkthrough P1-3).
 	func triageActions(_ row: ConversationRow) -> some View {
 		modifier(TriageActions(row: row))
 	}
@@ -46,7 +46,7 @@ private struct TriageActions: ViewModifier {
 					Button("Restore") { model.triage(.restore, [row]) }
 						.tint(lane(.primary))
 					// Not the destructive role: that would animate the row away before the confirm.
-					Button("Delete Forever") { model.pendingDelete = row }
+					Button("Delete forever") { model.pendingDelete = row }
 						.tint(lane(.neg))
 				} else {
 					// The first is the outermost, the full swipe: Mark as … · Trash · Archive on screen.
@@ -189,7 +189,7 @@ private struct TriageConfirm: ViewModifier {
 				titleVisibility: .visible,
 				presenting: model.pendingDelete
 			) { row in
-				Button("Delete Forever", role: .destructive) { model.deleteForever(row) }
+				Button("Delete forever", role: .destructive) { model.deleteForever(row) }
 				Button("Cancel", role: .cancel) { model.pendingDelete = nil }
 			} message: { _ in
 				Text("This can’t be undone.")

@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import { ApiHttpError, api } from "../api/client";
 import { useApp } from "../store/app";
-import { batchActionCached } from "./cache";
+import { batchActionCached, forgetConversations } from "./cache";
 
 /**
  * Triage (S7, design/r2-build-spec.md): Archive, Trash, Restore and Read/Unread on whole
@@ -234,6 +234,9 @@ export function useTriage() {
 	): Promise<boolean> => {
 		if (targets.length === 0) return false;
 		let deleted = 0;
+		// Conversations whose Trash is gone: the device forgets them (a cache failure is not the delete's).
+		const gone: string[] = [];
+		const forget = () => forgetConversations(gone).catch(() => undefined);
 		try {
 			for (const target of targets) {
 				const detail = await api.conversations.get(target.id, { load: "full" });
@@ -241,8 +244,10 @@ export function useTriage() {
 					await api.emails.delete(message.id);
 					deleted += 1;
 				}
+				gone.push(target.id);
 			}
 		} catch (error) {
+			await forget();
 			const doing = `delete ${what(targets)} forever`;
 			say(
 				deleted > 0
@@ -254,6 +259,7 @@ export function useTriage() {
 			return false;
 		}
 		hide(targets.map((t) => t.id));
+		await forget();
 		say(`Deleted ${what(targets)} forever`, "success");
 		options.refreshed?.();
 		return true;

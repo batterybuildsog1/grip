@@ -274,9 +274,8 @@ const ExportDialog: Component<{ onClose: () => void }> = (props) => {
 						>
 							CSV
 						</button>
-						<span class="ml-1 text-[13px] text-muted">
-							Each company starts a page; every trip with its date, both addresses, purpose and
-							miles
+						<span class="ml-1 text-[13px] text-muted" data-testid="export-holds">
+							Every trip with its date, both addresses, purpose and miles
 						</span>
 					</div>
 				</div>

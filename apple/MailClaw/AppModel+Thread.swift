@@ -26,12 +26,13 @@ enum ThreadAction: Sendable {
 extension AppModel {
 	/// A thread's bar and More menu (iPhone): Archive, Trash and Mark unread run S7's one engine on
 	/// the open conversation, so Archive and Trash open the next one (L3, iOS Mail's default) and
-	/// the toast offers Undo. Returns a notice when the action can't run here.
+	/// the toast offers Undo; inside Trash they are Restore and Delete forever (`archiveTitle`).
+	/// Returns a notice when the action can't run here.
 	func threadAction(_ action: ThreadAction, row: ConversationRow?) -> String? {
 		guard let row else { return "\(action.title) isn’t available until the conversation loads." }
 		switch action {
-		case .archive where !inTrash: triage(.archive, [row])
-		case .trash: if inTrash { pendingDelete = row } else { triage(.trash, [row]) }
+		case .archive: archive(row)
+		case .trash: trash(row)
 		case .markUnread: triage(.markUnread, [row])
 		default: return "\(action.title) isn’t in this build yet."
 		}

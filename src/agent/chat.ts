@@ -23,7 +23,6 @@ export interface ChatContext {
 	billing?: BillingConfig | null;
 	hubUrl?: string;
 	hubKey?: string;
-	hubSeat?: string;
 	workspaceId: string;
 	domainScope: string[];
 	model: string;

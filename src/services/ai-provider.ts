@@ -1,4 +1,4 @@
-/** Hosted AI uses the customer's own hub endpoint and seat; the owner's existing path is unchanged. */
+/** Hosted AI goes through the operator's AI hub with the customer's own hub key; the owner's existing path is unchanged. */
 import { anthropicMessagesUrl } from "@/agent/anthropic";
 import { type BillingConfig, reserveUsage, settleUsage, type UsageKind } from "@/services/ai-usage";
 
@@ -9,7 +9,6 @@ export interface MeteredProviderContext {
 	billing?: BillingConfig | null;
 	hubUrl?: string;
 	hubKey?: string;
-	hubSeat?: string;
 }
 export async function agentAiFetch(
 	ctx: MeteredProviderContext,
@@ -162,8 +161,8 @@ async function hostedAgentFetch(
 	kind: UsageKind,
 	cfg: BillingConfig,
 ): Promise<Response> {
-	if (!ctx.hubUrl || !ctx.hubKey || ctx.hubSeat !== `grip-${cfg.instance}`)
-		throw new Error("Hosted AI requires its customer-dedicated hub URL, key and seat");
+	if (!ctx.hubUrl || !ctx.hubKey)
+		throw new Error("Hosted AI requires the hub URL and its own hub key");
 	const url = new URL(ctx.hubUrl);
 	if (
 		url.protocol !== "https:" ||
@@ -176,7 +175,7 @@ async function hostedAgentFetch(
 		!url.hostname.includes(".") ||
 		["api.openai.com", "api.anthropic.com"].includes(url.hostname.replace(/\.$/, ""))
 	)
-		throw new Error("Hosted AI requires an isolated HTTPS hub /v1 endpoint");
+		throw new Error("Hosted AI requires an HTTPS hub /v1 endpoint");
 	const messages = body.messages as { role: string; content: string }[];
 	if (
 		!Array.isArray(messages) ||

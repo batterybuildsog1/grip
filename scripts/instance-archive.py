@@ -49,7 +49,8 @@ class Client:
         url = self.host + '/api/export/' + path + '?' + urllib.parse.urlencode(params)
         for attempt in range(6):
             try:
-                return self.opener.open(urllib.request.Request(url, headers={'Authorization': self.auth}), timeout=120)
+                # Cloudflare refuses urllib's default User-Agent on workers.dev hosts (403, error 1010).
+                return self.opener.open(urllib.request.Request(url, headers={'Authorization': self.auth, 'User-Agent': 'grip-instance-archive/1'}), timeout=120)
             except urllib.error.HTTPError as e:
                 if e.code not in (429, 502, 503, 504) or attempt == 5:
                     raise ValueError(f'Export HTTP {e.code} at {path}') from None

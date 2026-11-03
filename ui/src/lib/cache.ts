@@ -12,6 +12,7 @@ import type {
 } from "../types";
 import {
 	type ConversationSummaryRecord,
+	deleteConversationSummaries,
 	getCachedConversationSummaries,
 	putConversationSummaries,
 	updateConversationSummariesByThreadId,
@@ -611,6 +612,29 @@ function detailContainsEmail(
 const detailAsked = new WeakMap<ConversationDetailResponse, number>();
 export const detailAskedAt = (detail: ConversationDetailResponse) => detailAsked.get(detail);
 
+/**
+ * Thread reads numbered as they start, and the number reached when a compose window last let go of
+ * a draft (sent, discarded, closed) and of a thread's reply: an answer asked at or before that says
+ * nothing true about that draft, or about that thread's drafts (ux-w-p0-1 D17-D22). A count, not
+ * the clock: a read started after the let-go is newer by construction, in the same millisecond too.
+ */
+let detailReads = 0;
+const detailReadNumber = new WeakMap<ConversationDetailResponse, number>();
+const draftLetGoAt = new Map<string, number>();
+const threadLetGoAt = new Map<string, number>();
+/** The detail's place in the order reads started (0: unknown, older than everything). */
+export const detailNumber = (detail: ConversationDetailResponse) =>
+	detailReadNumber.get(detail) ?? 0;
+/** Answers numbered at or below this know nothing true about the draft (-1: never let go). */
+export const draftLetGo = (draftId: string) => draftLetGoAt.get(draftId) ?? -1;
+/** Answers numbered at or below this may miss a draft of this thread (-1: never). */
+export const threadLetGo = (conversationId: string) => threadLetGoAt.get(conversationId) ?? -1;
+/** A compose window let go of `draftId` (the store, as it happens, thread on screen or not). */
+export function noteDraftLetGo(draftId: string, conversationId?: string | null): void {
+	draftLetGoAt.set(draftId, detailReads);
+	if (conversationId) threadLetGoAt.set(conversationId, detailReads);
+}
+
 function withConversationDetailAnchor(
 	detail: ConversationDetailResponse,
 	emailId: string | null | undefined,
@@ -620,6 +644,8 @@ function withConversationDetailAnchor(
 	const anchored = { ...detail, anchor_email_id: emailId };
 	const asked = detailAsked.get(detail);
 	if (asked !== undefined) detailAsked.set(anchored, asked);
+	const number = detailReadNumber.get(detail);
+	if (number !== undefined) detailReadNumber.set(anchored, number);
 	return anchored;
 }
 
@@ -671,11 +697,16 @@ export async function getConversationDetailCached(
 	}
 
 	const askedAt = Date.now();
-	const request = api.conversations
+	const number = ++detailReads;
+	const request: Promise<ConversationDetailResponse> = api.conversations
 		.get(id, options, opts)
 		.then((detail) => {
 			if (!isCurrentGeneration(started)) throw staleIdentity();
 			detailAsked.set(detail, askedAt);
+			detailReadNumber.set(detail, number);
+			// A thread holding a draft is asked for each time it opens: its draft may have been
+			// written, sent or discarded in another tab or on another device (ux-w-p0-1 D12).
+			if (detail.emails.some((email) => email.mailbox_state === "draft")) return detail;
 			putConversationDetailCache(key, detail);
 			if (options?.load === "full") {
 				putConversationDetailCache(fullKey, detail);
@@ -684,16 +715,26 @@ export async function getConversationDetailCached(
 			return detail;
 		})
 		.finally(() => {
-			conversationDetailRequests.delete(requestKey);
+			// Forgotten meanwhile (forgetConversationDetail): a newer read may hold this key now.
+			if (conversationDetailRequests.get(requestKey) === request)
+				conversationDetailRequests.delete(requestKey);
 		});
 	conversationDetailRequests.set(requestKey, request);
 	return request;
 }
 
-/** Forget this conversation's cached detail: another tab or device may have changed it. */
+/**
+ * Forget what this tab knows of a conversation: another tab, device or window may have changed it.
+ * Its cached detail goes, and so do its reads on their way from the join table (their callers still
+ * get their answers), so the next ask is a new read (ux-w-p0-1 D19).
+ */
 export function forgetConversationDetail(id: string): void {
+	const isThis = (key: string) => (JSON.parse(key) as { id?: string }).id === id;
 	for (const key of [...conversationDetailCache.keys()]) {
-		if ((JSON.parse(key) as { id?: string }).id === id) conversationDetailCache.delete(key);
+		if (isThis(key)) conversationDetailCache.delete(key);
+	}
+	for (const key of [...conversationDetailRequests.keys()]) {
+		if (isThis(key.slice(key.indexOf("|") + 1))) conversationDetailRequests.delete(key);
 	}
 }
 
@@ -817,5 +858,17 @@ export async function batchActionCached(
 	} else {
 		clearConversationPageCache();
 	}
+	conversationDetailCache.clear();
+}
+
+/**
+ * Deleted forever on the server (lib/triage.ts): the device keeps no row, page or thread of them,
+ * or a later read of Trash from the device lists them again (P1-4 review). They are gone for every
+ * identity, so whoever is signed in by now loses nothing that exists.
+ */
+export async function forgetConversations(ids: string[]): Promise<void> {
+	if (ids.length === 0) return;
+	await deleteConversationSummaries(ids);
+	clearConversationPageCache();
 	conversationDetailCache.clear();
 }

@@ -397,7 +397,8 @@ routes.use("*", async (c, next) => {
 		}
 		await next();
 		// Compute names once after persistence/replay, solely on live trip response routes.
-		// Audit snapshots, exports, route points and all agent responses bypass this projection.
+		// Audit snapshots, route points and all agent responses bypass this projection. The owner's
+		// exports print the same names through report.ts `endpoint()` (ux-s-p0-5).
 		if (
 			principal(c).human &&
 			c.res.ok &&

@@ -28,7 +28,7 @@ struct ConsentNotes: View {
 	var body: some View {
 		let consent = model.consent
 		VStack(alignment: .leading, spacing: 8) {
-			Text("New mail’s sender, subject and the first part of its text go to OpenAI to sort it.")
+			Text("New mail’s sender, subject, attachment names and the first part of its text go to OpenAI to sort it.")
 				.foregroundStyle(.mcMuted)
 				.fixedSize(horizontal: false, vertical: true)
 			if let status {

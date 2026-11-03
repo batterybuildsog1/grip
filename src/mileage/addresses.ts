@@ -63,7 +63,10 @@ export function tripIds(value: unknown, ids: string[] = []): string[] {
 		for (const entry of Object.values(value)) tripIds(entry, ids);
 	return ids;
 }
-/** Live owner trip responses only (same hook as places); stored trips, audit and exports never see it. */
+/**
+ * Live owner trip responses only (same hook as places); stored trips and audit never see it. The owner's
+ * exports print it at export time (exports.ts, ux-s-p0-5).
+ */
 export function withAddresses(value: unknown, stored: Stored): unknown {
 	if (isTrip(value)) return { ...value, ...endpointAddresses(stored, value.id) };
 	if (Array.isArray(value)) return value.map((entry) => withAddresses(entry, stored));

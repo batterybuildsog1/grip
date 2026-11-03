@@ -70,8 +70,9 @@ struct MailCommands: Commands {
 			Button("Open") { model.openCursor() }.keyboardShortcut(key("o"))
 			Button("Back") { model.back() }.keyboardShortcut(key("u"))
 			Divider()
-			Button("Archive") { model.archive() }.keyboardShortcut(key("e"))
-			Button("Move to Trash") { model.trash() }.keyboardShortcut(key("#"))
+			// In Trash the keys keep their places: e restores, # asks before deleting forever (P1-3).
+			Button(model.inTrash ? "Restore" : "Archive") { model.archive() }.keyboardShortcut(key("e"))
+			Button(model.inTrash ? "Delete Forever…" : "Move to Trash") { model.trash() }.keyboardShortcut(key("#"))
 			Button("Mark as Unread") { model.markUnread() }.keyboardShortcut(key("u", .shift))
 			Button("Undo") { model.undoLast() }.keyboardShortcut(key("z"))
 			Button("Select") { model.togglePicked() }.keyboardShortcut(key("x")).disabled(model.selection != nil)

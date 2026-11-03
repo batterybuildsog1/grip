@@ -325,10 +325,74 @@ export function substantiation(t: Trip, projected: CalendarEvent[], now: number)
 						.join("; "),
 	};
 }
-/** Basic Type1 PDF: explicitly refuse Unicode instead of destroying names. CSV remains UTF-8. */
-export function pdfDocument(lines: string[]): Uint8Array {
-	if (lines.some((l) => /[^\x20-\x7e\t\r\n]/.test(l)))
-		throw new Error("Unicode PDF unsupported; use UTF-8 CSV");
+/** WinAnsiEncoding (cp1252) bytes 0x80-0x9F by position ("\0": no character); 0xA0-0xFF are Latin-1's own. */
+const CP1252_80 = "€\0‚ƒ„…†‡ˆ‰Š‹Œ\0Ž\0\0‘’“”•–—˜™š›œ\0žŸ";
+/** A character's byte in the PDF font's WinAnsiEncoding; undefined outside cp1252 or for a control. */
+function winAnsi(c: string): number | undefined {
+	if (c.length !== 1) return undefined;
+	const n = c.charCodeAt(0);
+	if ((n >= 0x20 && n <= 0x7e) || (n >= 0xa0 && n <= 0xff)) return n;
+	const i = c === "\0" ? -1 : CP1252_80.indexOf(c);
+	return i >= 0 ? 0x80 + i : undefined;
+}
+/** Plain forms for characters outside cp1252 that have an obvious ASCII spelling. */
+const PDF_PLAIN: Record<string, string> = {
+	"→": "->",
+	"←": "<-",
+	"↔": "<->",
+	"⇒": "=>",
+	"⇐": "<=",
+	"−": "-",
+	"‐": "-",
+	"‑": "-",
+	"‒": "-",
+	"―": "-",
+	"′": "'",
+	"″": '"',
+	"≤": "<=",
+	"≥": ">=",
+	"≠": "!=",
+};
+/**
+ * A line in the PDF font's characters (ux-s-p0-5 round 3): a character outside cp1252 is written in
+ * its plain form (PDF_PLAIN; else its letters without their marks, "ở" -> "o"; else left out, as CJK
+ * or an emoji are), never refusing the month. `changed` says whether anything was replaced.
+ */
+function pdfPlain(line: string): { text: string; changed: boolean } {
+	let text = "",
+		changed = false;
+	for (const c of line.replace(/[\t\r\n]/g, " ")) {
+		if (winAnsi(c) !== undefined) {
+			text += c;
+			continue;
+		}
+		changed = true;
+		const folded = PDF_PLAIN[c] ?? c.normalize("NFKD").replace(/\p{M}/gu, "");
+		if ([...folded].every((f) => winAnsi(f) !== undefined)) text += folded;
+	}
+	return {
+		text: changed ? text.replace(/ {2,}/g, " ").replace(/ +([,.;:])/g, "$1") : text,
+		changed,
+	};
+}
+/**
+ * Basic Type1 PDF in WinAnsiEncoding (Latin letters, curly quotes, dashes, "·"), so Apple's names and
+ * addresses print as written (ux-s-p0-5). Anything else prints in its plain form and the file ends with
+ * one note saying so, never refusing the export; the UTF-8 CSV keeps the exact text.
+ */
+export function pdfDocument(input: string[]): Uint8Array {
+	const plain = input.map(pdfPlain);
+	const lines = plain.map((p) => p.text);
+	if (plain.some((p) => p.changed))
+		lines.push(
+			"",
+			"Note: some characters can't be shown in this PDF, so they are printed in a plain form or left out. The CSV export has the exact text.",
+		);
+	// PDF string escapes first, then every byte past ASCII as an octal escape: the file stays 7-bit.
+	const pdfString = (line: string) =>
+		line
+			.replace(/([\\()])/g, "\\$1")
+			.replace(/[^\x20-\x7e]/g, (c) => `\\${(winAnsi(c) ?? 0x3f).toString(8)}`);
 	const wrapped = lines.flatMap((line) => {
 		const result: string[] = [];
 		let current = "";
@@ -352,14 +416,14 @@ export function pdfDocument(lines: string[]): Uint8Array {
 	const objects: string[] = [
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"",
-		"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>",
 	];
 	const kids: string[] = [];
 	for (const [pageIndex, page] of pages.entries()) {
 		const pageId = objects.length + 1,
 			streamId = pageId + 1;
 		kids.push(`${pageId} 0 R`);
-		const stream = `BT /F1 10 Tf 40 800 Td 16 TL ${page.map((l) => `(${l.replace(/([\\()])/g, "\\$1")}) Tj T*`).join("\n")} ET BT /F1 9 Tf 40 25 Td (Page ${pageIndex + 1} / ${pages.length}) Tj ET`;
+		const stream = `BT /F1 10 Tf 40 800 Td 16 TL ${page.map((l) => `(${pdfString(l)}) Tj T*`).join("\n")} ET BT /F1 9 Tf 40 25 Td (Page ${pageIndex + 1} / ${pages.length}) Tj ET`;
 		objects.push(
 			`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${streamId} 0 R >>`,
 			`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,

@@ -98,7 +98,8 @@ final class ComposeModel: Identifiable {
 	private var inReplyTo: String?
 	private var references: String?
 	private var attachmentsDirty = false
-	private var draftId: String?
+	/// The server draft; once sent, the sent message's id (the server keeps it).
+	private(set) var draftId: String?
 	private var revision = 0
 	/// What the server has of this draft (nil: nothing, or not what is here).
 	private var lastSaved: DraftFields?

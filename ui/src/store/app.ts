@@ -1,5 +1,6 @@
 import { createContext, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
+import { noteDraftLetGo } from "../lib/cache";
 import { type Appearance, applyAppearance, saveAppearance, storedAppearance } from "../lib/theme";
 import type { EmailCategory, MailboxState, PlatformMeta } from "../types";
 
@@ -251,7 +252,13 @@ type AppStore = [
 		selectEmail: (id: string | null) => void;
 		adjustUnreadCount: (delta: number, category?: string | null) => void;
 		openCompose: (replyTo?: ComposeReplyTarget | null) => void;
-		editDraft: (draftId: string) => void;
+		/** A saved draft in its composer; `replyTo`: as the reply under its thread. `joinThreadReply`
+		 *  (a list row): a reply already open in that thread is the one brought forward. */
+		editDraft: (
+			draftId: string,
+			replyTo?: ComposeReplyTarget | null,
+			opts?: { joinThreadReply?: boolean },
+		) => void;
 		restoreComposeWindows: (windows: RestoredComposeWindow[]) => void;
 		setComposeWindowDraftId: (windowId: string, id: string | null) => void;
 		/** Reply all, or a reply brought back after Cancel: what the window answers, and how. */
@@ -320,6 +327,12 @@ export function createAppStore() {
 				lastActive?.id ?? s.composeWindows[s.composeWindows.length - 1]?.id ?? null;
 		}
 		refreshFocusedComposeDraftId(s);
+	};
+
+	/** The window lets go of its draft (sent, discarded, closed, replaced): noted for every thread
+	 *  view, on screen or not, before any of them redraws (ux-w-p0-1 D21). */
+	const letGo = (window: ComposeWindowState) => {
+		if (window.draftId) noteDraftLetGo(window.draftId, window.replyTo?.conversationId);
 	};
 
 	// Focus only: the focused window is drawn on top (Compose.tsx z-index). Moving it within
@@ -496,6 +509,7 @@ export function createAppStore() {
 				produce((s) => {
 					const idx = s.composeWindows.findIndex((window) => window.id === windowId);
 					if (idx === -1) return;
+					letGo(s.composeWindows[idx]);
 					s.composeWindows.splice(idx, 1);
 					syncFocusedComposeWindow(s);
 				}),
@@ -582,20 +596,43 @@ export function createAppStore() {
 					refreshFocusedComposeDraftId(s);
 				}),
 			),
-		editDraft: (draftId: string) =>
+		editDraft: (
+			draftId: string,
+			replyTo?: ComposeReplyTarget | null,
+			opts?: { joinThreadReply?: boolean },
+		) =>
 			setState(
 				produce((s) => {
-					const existing = s.composeWindows.find((window) => window.draftId === draftId);
+					// The window holding it, else (a list row's reply) the one reply already open in its thread.
+					// A thread's Draft item doesn't join: with another reply open it gets its own window (D14).
+					const existing =
+						s.composeWindows.find((window) => window.draftId === draftId) ??
+						(opts?.joinThreadReply && replyTo?.conversationId
+							? s.composeWindows.find(
+									(window) => window.replyTo?.conversationId === replyTo.conversationId,
+								)
+							: undefined);
 					if (existing) {
 						existing.minimized = false;
 						bringComposeWindowToFront(s, existing.id);
 						return;
 					}
+					// A thread's Draft item opens its reply under the thread, unless another reply is
+					// already written there (one per thread): then it is a window of its own.
+					const threadTaken =
+						replyTo &&
+						s.composeWindows.some(
+							(window) =>
+								window.replyTo &&
+								((replyTo.conversationId &&
+									window.replyTo.conversationId === replyTo.conversationId) ||
+									window.replyTo.emailId === replyTo.emailId),
+						);
 					const windowId = createComposeWindowId();
 					s.composeWindows.push({
 						id: windowId,
 						draftId,
-						replyTo: null,
+						replyTo: replyTo && !threadTaken ? { ...replyTo } : null,
 						minimized: false,
 						closeRequestKey: 0,
 						createdAt: Date.now(),
@@ -629,6 +666,7 @@ export function createAppStore() {
 				produce((s) => {
 					const window = s.composeWindows.find((entry) => entry.id === windowId);
 					if (!window) return;
+					if (window.draftId !== id) letGo(window);
 					window.draftId = id;
 					refreshFocusedComposeDraftId(s);
 				}),

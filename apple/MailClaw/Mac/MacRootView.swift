@@ -317,8 +317,9 @@ struct MacRootView: View {
 		}
 	}
 
+	/// Archive; in Trash, Restore (walkthrough P1-3).
 	private var archiveWord: some View {
-		Button("Archive") { model.archive() }
+		Button(model.archiveTitle) { model.archive() }
 			.buttonStyle(ToolbarWord(role: readingNewsletter && !model.inTrash ? .primary : .plain))
 			.accessibilityIdentifier("tb-archive")
 	}
@@ -339,9 +340,9 @@ struct MacRootView: View {
 
 	private var readTitle: String { model.actionTargetRow?.unread == true ? "Mark read" : "Mark unread" }
 
-	/// Trash is red and set apart, never next to Archive (r2 S7, WP-04).
+	/// Trash is red and set apart, never next to Archive (r2 S7, WP-04); in Trash, Delete forever.
 	private var trashWord: some View {
-		Button("Trash", role: .destructive) { model.trash() }
+		Button(model.trashTitle, role: .destructive) { model.trash() }
 			.buttonStyle(ToolbarWord(role: .neg))
 			.padding(.horizontal, 10)
 			.accessibilityIdentifier("tb-trash")
@@ -358,13 +359,13 @@ struct MacRootView: View {
 	/// is narrow it also holds the words that gave way, Trash last and set apart.
 	private func moreWord(_ fit: Fit = .full) -> some View {
 		Menu {
-			if fit == .minimal, !readingNewsletter { Button("Archive") { model.archive() } }
+			if fit == .minimal, !readingNewsletter { Button(model.archiveTitle) { model.archive() } }
 			if fit != .full { Button(readTitle) { model.toggleRead() } }
 			if !readingNewsletter { Button("Reply all") { compose(.replyAll) } }
 			Button("Forward") { compose(.forward) }
 			if fit == .minimal {
 				Divider()
-				Button("Trash", role: .destructive) { model.trash() }
+				Button(model.trashTitle, role: .destructive) { model.trash() }
 			}
 		} label: {
 			Text("More")

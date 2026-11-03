@@ -1,5 +1,7 @@
+import { ownerAddresses } from "./addresses";
 import { MileageError, type MileagePrincipal, requireScope } from "./auth";
 import { builtinCompanies } from "./companies";
+import { ownerPlaces } from "./places";
 import {
 	type CalendarEvent,
 	companyTreatment,
@@ -12,7 +14,15 @@ import {
 } from "./policy";
 import { pendingProposals } from "./proposals";
 import { type Rate, rateFor, ratesStatement } from "./rates";
-import { companyList, countTrips, estimateCents, totalsOf, uncoveredOf } from "./report";
+import {
+	companyList,
+	countTrips,
+	endpoint,
+	endWords,
+	estimateCents,
+	totalsOf,
+	uncoveredOf,
+} from "./report";
 import {
 	type Category,
 	canonical,
@@ -131,6 +141,29 @@ export async function exportReport(
 		? counted
 		: countTrips(stored, pending, cats, rateRows, true);
 	const countedById = new Map(counted.map((x) => [x.trip.id, x]));
+	// ux-s-p0-5: each end as the owner's screen shows it (the report's own rule, read now; nothing is
+	// stored). Agents get no ends, so nothing is read for them. Who named an end (`cited`) doesn't
+	// change its words. A guess's name prints only when that guess is in the file.
+	const [places, addresses] = p.human
+		? await Promise.all([
+				ownerPlaces(db, p.owner),
+				ownerAddresses(
+					db,
+					p.owner,
+					stored.map((t) => t.id),
+				),
+			])
+		: [undefined, undefined];
+	const endCtx = { places: places ?? [], addresses: addresses ?? new Map(), cited: new Map() };
+	const ends = (t: Trip): Pick<Trip, "origin" | "destination"> => {
+		const x = countedById.get(t.id);
+		if (!x) return { origin: "", destination: "" };
+		const guess = x.state === "proposal" ? x.guess : null;
+		return {
+			origin: endWords(endpoint(x, "start", endCtx, guess)),
+			destination: endWords(endpoint(x, "end", endCtx, guess)),
+		};
+	};
 	const all: Trip[] = counted.map((x) =>
 		x.state === "proposal" && x.guess
 			? {
@@ -288,8 +321,7 @@ export async function exportReport(
 			>
 		> = ownerIRS
 			? {
-					origin: t.origin,
-					destination: t.destination,
+					...ends(t),
 					vehicle_id: t.vehicle_id,
 					start_lat: t.start_lat,
 					start_lng: t.start_lng,
@@ -297,7 +329,7 @@ export async function exportReport(
 					end_lng: t.end_lng,
 				}
 			: p.human
-				? { origin: t.origin, destination: t.destination }
+				? ends(t)
 				: {};
 		return {
 			id: t.id,
@@ -472,7 +504,7 @@ export async function exportReport(
 	];
 	let body: Uint8Array | string;
 	if (format === "pdf") {
-		try {
+		{
 			const title = !company
 				? "IRS Mileage Substantiation Log"
 				: company.treatment === "business"
@@ -525,7 +557,9 @@ export async function exportReport(
 					"",
 					`Trip ${r.id} | revision ${r.revision} | ${r.date} (${r.timezone})`,
 					`Time (UTC): ${new Date(r.started_at).toISOString()} to ${new Date(r.ended_at).toISOString()}`,
-					...(p.human ? [`From: ${r.origin}`, `To: ${r.destination}`] : []),
+					...(p.human
+						? [`From: ${r.origin || "unknown"}`, `To: ${r.destination || "unknown"}`]
+						: []),
 					...(ownerIRS
 						? [
 								`Summary endpoints: ${r.start_lat ?? "unknown"},${r.start_lng ?? "unknown"} -> ${r.end_lat ?? "unknown"},${r.end_lng ?? "unknown"}`,
@@ -584,14 +618,6 @@ export async function exportReport(
 					: []),
 			];
 			body = pdfDocument(lines);
-		} catch (error) {
-			if (String(error).includes("Unicode"))
-				throw new MileageError(
-					"UNICODE_PDF_UNSUPPORTED",
-					"PDF cannot represent these Unicode names; export UTF-8 CSV without data loss",
-					422,
-				);
-			throw error;
 		}
 	} else {
 		const keys = detail.length

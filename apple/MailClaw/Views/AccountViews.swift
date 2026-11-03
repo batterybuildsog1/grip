@@ -152,12 +152,15 @@ struct SignInView: View {
 	}
 
 	/// A field under its label: the raised fill in the control's corner, the focus colour around it
-	/// while it has the keyboard.
+	/// while it has the keyboard. The label's words are the field's spoken name, read once: the
+	/// caption itself is hidden from VoiceOver and the prompt is empty (the title alone named nothing:
+	/// ux-i-account-lock-signin).
 	private func input<Content: View>(_ title: String, _ which: Field, @ViewBuilder content: () -> Content) -> some View {
 		VStack(alignment: .leading, spacing: 6) {
 			Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.mcMuted)
 				.accessibilityHidden(true)
 			content()
+				.accessibilityLabel(Text(title))
 				.textFieldStyle(.plain)
 				.focused($field, equals: which)
 				.disabled(busy)
@@ -265,29 +268,50 @@ enum LockDelay: Int, CaseIterable, Identifiable {
 	}
 }
 
+/// Locked (Face ID, Touch ID or the passcode): the whole window, on the sheet as the sign-in screen
+/// is. Unlock is Grip's one filled button and says "Unlocking…" while it asks, as Sign in does; Sign
+/// in again is the outlined one, 44 pt like Unlock. Never a system style: `.borderedProminent` took
+/// the tint (bone in Dark) under white words, 1.2:1 (ux-i-account-lock-signin).
 struct LockedMailView: View {
 	@Environment(AppModel.self) private var model
+	@Environment(\.mcPalette) private var palette
+
 	var body: some View {
 		ScrollView {
 			VStack(spacing: 20) {
-				Text("Grip is locked").font(.title2.bold()).accessibilityAddTraits(
-					.isHeader)
+				Text("Grip is locked")
+					.font(.title2.weight(.mcTitle))
+					.multilineTextAlignment(.center)
+					.fixedSize(horizontal: false, vertical: true)
+					.accessibilityAddTraits(.isHeader)
 				if let error = model.lock.error {
-					Text(error).multilineTextAlignment(.center).fixedSize(
-						horizontal: false, vertical: true)
+					Text(error)
+						.foregroundStyle(.mcMuted)
+						.multilineTextAlignment(.center)
+						.fixedSize(horizontal: false, vertical: true)
 				}
-				Button("Unlock") { Task { await model.lock.unlock() } }
-					.buttonStyle(.borderedProminent).controlSize(.large)
-					.disabled(model.lock.authenticating).accessibilityIdentifier(
-						"unlock-mail"
-					)
+				Button(model.lock.authenticating ? "Unlocking…" : "Unlock") { Task { await model.lock.unlock() } }
+					.buttonStyle(MCPrimaryButtonStyle(wide: true))
+					.disabled(model.lock.authenticating)
 					.keyboardShortcut(.defaultAction)
-				if model.lock.authenticating { ProgressView("Unlocking…") }
-				Button("Sign in again") { Task { await model.signOut() } }.disabled(
-					model.signingOut)
-			}.padding(28).frame(maxWidth: 380).frame(maxWidth: .infinity)
-		}.defaultScrollAnchor(.center, for: .alignment)
-			.scrollDismissesKeyboard(.never)
+					.accessibilityIdentifier("unlock-mail")
+				Button { Task { await model.signOut() } } label: {
+					// 44 pt with the style's padding, as Unlock.
+					Text("Sign in again").frame(minHeight: 32)
+				}
+				.buttonStyle(MCOutlinedButtonStyle())
+				.disabled(model.signingOut)
+			}
+			.padding(28).frame(maxWidth: 380).frame(maxWidth: .infinity)
+		}
+		.defaultScrollAnchor(.center, for: .alignment)
+		.scrollDismissesKeyboard(.never)
+		.background(.mcSheet)
+		.foregroundStyle(.mcText)
+		#if os(macOS)
+		// The window's toolbar band in the sheet's colour, as on the sign-in screen (grip-themes G07).
+		.toolbarBackground(palette[.sheet], for: .windowToolbar)
+		#endif
 	}
 }
 

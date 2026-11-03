@@ -24,6 +24,10 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
 	private var token: String?
 	private var attemptedFor: String?
 	private var registeredFor: String?
+	/// Sign-in's ask is out. iOS shows one system prompt at a time, so Mileage holds its location and motion asks
+	/// meanwhile (MileageLocation): build 12 raised the location alert while this ask was still out, and the walk's
+	/// iPads never showed Notifications (iPad/Mac UX walk P1-5). Over when iOS answers, or after a minute if it never does.
+	private(set) var asking = false
 	private var tokenDefaults: UserDefaults? {
 		LaunchOptions.fixtureMode
 			? UserDefaults(suiteName: LaunchOptions.fixtureKeychainService) : .standard
@@ -49,10 +53,19 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
 		registration?.cancel()
 		registration = nil
 		let current = generation
+		asking = false
 		#if os(macOS)
 			// The Mac keeps its own banners (above); it registers no device token.
 			guard LaunchOptions.fixtureMode else { return }
 		#endif
+		// Set before any await: Mileage's first ask needs a sync round trip, so it always finds this.
+		if prompt, !LaunchOptions.fixtureMode {
+			asking = true
+			Task { [weak self] in
+				try? await Task.sleep(for: .seconds(60))
+				self?.asked(current)
+			}
+		}
 		setup = Task { [weak self] in
 			guard let self else { return }
 			if LaunchOptions.fixtureMode {
@@ -66,10 +79,13 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
 				return
 			}
 			let center = UNUserNotificationCenter.current()
-			let settings = await center.notificationSettings()
-			if prompt, settings.authorizationStatus == .notDetermined {
+			// Sign-in asks straight away: iOS shows its alert only if it never asked, else answers at once. (Build 12 read
+			// the settings first; on the old-code iPad run that answer never came, so the request was never sent.)
+			if prompt {
 				_ = try? await center.requestAuthorization(options: [.alert, .badge, .sound])
 			}
+			// Answered, refused, failed or never needed: the row reads iOS again and Mileage may ask now.
+			asked(current)
 			guard current == generation, !Task.isCancelled else { return }
 			let status = await center.notificationSettings().authorizationStatus
 			guard current == generation, !Task.isCancelled,
@@ -123,8 +139,15 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
 			if self.token != token { retryRegistration() }
 		}
 	}
+	/// Sign-in's ask is over for this session (answered, or a minute passed): once, Mileage may ask now.
+	private func asked(_ current: UUID) {
+		guard asking, current == generation else { return }
+		asking = false
+		model?.notificationsAsked()
+	}
 	func signOut(_ previous: AppSession?) async {
 		generation = UUID()
+		asking = false
 		session = nil
 		attemptedFor = nil
 		registeredFor = nil

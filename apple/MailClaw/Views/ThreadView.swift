@@ -23,6 +23,8 @@ final class ThreadModel {
 	private(set) var loadingRest = false
 	/// The server's whole thread has arrived (not the stored copy): its read state is current.
 	private(set) var haveFull = false
+	/// Each read of the thread: an older one answering late never replaces a newer (after a send).
+	@ObservationIgnored private var reads = 0
 
 	init(id: String, anchor: String?, sync: MailSync) {
 		self.id = id
@@ -35,11 +37,13 @@ final class ThreadModel {
 	}
 
 	func load() async {
+		reads += 1
+		let read = reads
 		let cachedFirst = detail != nil
 		let (sync, id, anchor) = (self.sync, self.id, self.anchor)
 		failure = nil
 		loadingRest = true
-		defer { loadingRest = false }
+		defer { if read == reads { loadingRest = false } }
 		let full = Task.detached { () -> Result<ConversationDetail, APIError> in
 			do { return .success(try await sync.threadFull(id: id, emailId: anchor)) }
 			catch let error as APIError { return .failure(error) }
@@ -51,11 +55,14 @@ final class ThreadModel {
 				if let detail = await first.value, !self.haveFull { self.show(detail, source: .network) }
 			}
 		}
-		switch await full.value {
+		let answer = await full.value
+		guard read == reads else { return }
+		switch answer {
 		case let .success(detail):
 			haveFull = true
 			show(detail, source: cachedFirst ? .cache : .network)
 			let before = await Task.detached { await Self.earlierConversation(detail, sync: sync) }.value
+			guard read == reads else { return }
 			earlier = before
 		case let .failure(error):
 			fail(error)
@@ -152,6 +159,8 @@ struct ThreadView: View {
 	@State private var showOriginal: Set<String> = []
 	@State private var dim = false
 	@State private var notice: String?
+	/// A reply just sent into this conversation: scrolled to once the thread holds it, sent.
+	@State private var reveal: String?
 	/// This open has asked the server to mark the conversation read (once per open).
 	@State private var markedRead = false
 	@ScaledMetric(relativeTo: .title2) private var subjectSize: CGFloat = 24
@@ -238,6 +247,11 @@ struct ThreadView: View {
 			// Initial too: a stored thread is there from the first frame, and its network copy
 			// usually has the same count.
 			.onChange(of: model.detail?.emails.count, initial: true) { _, _ in scrollToAnchor(proxy) }
+			.onChange(of: revealed) { _, id in
+				guard let id else { return }
+				withAnimation { proxy.scrollTo(id, anchor: .top) }
+				reveal = nil
+			}
 		}
 		// On the reader alone: an identifier on the whole view renames the bars' and the notice's own.
 		.accessibilityIdentifier("thread-view")
@@ -293,6 +307,13 @@ struct ThreadView: View {
 			guard full, !markedRead, let detail = model.detail else { return }
 			markedRead = app.markOpenedRead(model.id, detail: detail)
 		}
+		// Sent into this conversation (the sheet, or a Mac composer window): read it again, so the reply
+		// is under the thread at once (walkthrough P1-1).
+		.onChange(of: app.delivered) { _, sent in
+			guard let sent, sent.conversationId == model.id else { return }
+			reveal = sent.emailId
+			Task { await model.load() }
+		}
 		// The rail window's words follow a lone newsletter: Archive filled, nothing to reply to (L3 S3).
 		.onChange(of: newsletter?.id, initial: true) { _, id in app.newsletterOpen = id == nil ? nil : model.id }
 		.onChange(of: model.detail == nil, initial: true) { _, isNil in
@@ -318,6 +339,12 @@ struct ThreadView: View {
 			.padding(.horizontal, 4)
 			.padding(.top, 12)
 			.padding(.bottom, 6)
+	}
+
+	/// `reveal`, once the thread holds it as a sent message.
+	private var revealed: String? {
+		guard let reveal, model.own.contains(where: { $0.id == reveal && !$0.isDraft }) else { return nil }
+		return reveal
 	}
 
 	private var newsletter: Email? {
@@ -403,13 +430,21 @@ struct ThreadView: View {
 					Color.clear.frame(width: 72, height: 1).accessibilityHidden(true)
 				}
 				Spacer()
-				Button { act(.archive) } label: {
-					Text("Archive").padding(.horizontal, 16)
+				if app.inTrash {
+					// Plain in Trash, as the Mac's toolbar and the web keep it (P1-3).
+					Button(app.archiveTitle) { act(.archive) }
+						.tint(.mcText)
+						.frame(minWidth: 72)
+						.accessibilityShowsLargeContentViewer()
+				} else {
+					Button { act(.archive) } label: {
+						Text("Archive").padding(.horizontal, 16)
+					}
+					.buttonStyle(MCPrimaryButtonStyle(capsule: true))
+					.accessibilityShowsLargeContentViewer { Text("Archive") }
 				}
-				.buttonStyle(MCPrimaryButtonStyle(capsule: true))
-				.accessibilityShowsLargeContentViewer { Text("Archive") }
 			} else {
-				Button("Archive") { act(.archive) }
+				Button(app.archiveTitle) { act(.archive) }
 					.tint(.mcText)
 					.frame(minWidth: 72)
 					.accessibilityShowsLargeContentViewer()
@@ -455,7 +490,7 @@ struct ThreadView: View {
 		}) {
 			Button(dim ? "Undim email" : "Dim email") { dim.toggle() }
 		}
-		Button("Trash", role: .destructive) { act(.trash) }
+		Button(app.trashTitle, role: .destructive) { act(.trash) }
 	}
 	#endif
 

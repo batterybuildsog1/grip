@@ -44,8 +44,8 @@ import SearchHeader, { type SearchScope, type SearchStatus } from "./SearchHeade
 import { setAccountSheetOpen } from "./Settings";
 import { railSlot, useViewMenuItems } from "./Sidebar";
 import { accountsOf } from "./TopBar";
-import ViewTitle from "./ViewTitle";
 import DeleteForever from "./triage/DeleteForever";
+import ViewTitle from "./ViewTitle";
 
 /**
  * The list (design r2 §4 S1, L3): the view's title (a view menu when the column is hidden), Needs
@@ -123,16 +123,19 @@ const ConversationList: Component = () => {
 		const rows = leaving.size > 0 ? loaded().filter((e) => !leaving.has(e.id)) : loaded();
 		return state.levelView === "money" && !state.searchQuery ? groupByVendor(rows) : rows;
 	});
-	// What an open thread advances to after Archive or Trash (S7's nextAfter), and its "4 of 25".
+	// What an open thread advances to after Archive or Trash (S7's nextAfter), and its "4 of 25":
+	// conversations, so a row that is only its draft is passed (ux-w-p1-2, P1-3).
 	createEffect(() =>
 		setListedConversations(
-			emails().map((e) => ({
-				id: e.id,
-				emailId: e.display_email_id ?? e.latest_email_id ?? e.id,
-				name: rowName(e),
-				subject: rowSubject(e),
-				unread: isUnread(e),
-			})),
+			emails()
+				.filter((e) => !draftOnly(e))
+				.map((e) => ({
+					id: e.id,
+					emailId: e.display_email_id ?? e.latest_email_id ?? e.id,
+					name: rowName(e),
+					subject: rowSubject(e),
+					unread: isUnread(e),
+				})),
 			hasMore(),
 		),
 	);
@@ -144,8 +147,6 @@ const ConversationList: Component = () => {
 	const [total, setTotal] = createSignal(0);
 	const [hasMore, setHasMore] = createSignal(false);
 	const [loading, setLoading] = createSignal(true);
-	// A view switch with rows on screen keeps them (dimmed) instead of blanking to skeletons.
-	const [switching, setSwitching] = createSignal(false);
 	// From opening a view until the server answers it, rows painted from the device may be stale:
 	// the list says it is loading (dimmed, aria-busy) (WD-11: a slow switch showed old rows, no sign).
 	const [awaitingNetwork, setAwaitingNetwork] = createSignal(false);
@@ -176,6 +177,14 @@ const ConversationList: Component = () => {
 	/** The tablet band (768-999): the rail's two-line rows, not the five-column line (WD1). */
 	const twoLine = () => !phone() && isNarrow();
 	const inTrash = () => state.activeMailbox === "trash" && !state.searchQuery;
+	/**
+	 * A row that is only its draft, as in the apps (AppModel+Compose openDraft): any draft row in
+	 * Drafts, and anywhere a draft that is its whole conversation (a new message). Any other draft
+	 * row is its conversation, whose reply that draft is (ux-w-p1-2).
+	 */
+	const draftOnly = (e: ConversationSummaryRecord) =>
+		e.mailbox_state === "draft" &&
+		(e.thread_count <= 1 || (state.activeMailbox === "draft" && !state.searchQuery));
 	/** A thread is open: the list is the rail (desktop), j/k hop its rows. */
 	const reading = () => Boolean(state.selectedConversationId);
 	/** No column (hidden, below 900 px, a phone): the title is the views menu and carries the count. */
@@ -300,10 +309,7 @@ const ConversationList: Component = () => {
 		// on a cold device is empty for every view: keep the skeletons, not "No conversations".
 		let answered = false;
 		let waiting = false;
-		const settle = () => {
-			setLoading(false);
-			setSwitching(false);
-		};
+		const settle = () => setLoading(false);
 		const awaits = !refresh && !append;
 		const heard = () => {
 			if (awaits && fetchGen() === gen) setAwaitingNetwork(false);
@@ -356,11 +362,7 @@ const ConversationList: Component = () => {
 		} catch (e) {
 			heard();
 			if (isAbort(e)) return;
-			if (fetchGen() === gen) {
-				setLoadError(loadErrorOf(e));
-				// Rows still on screen belong to the previous view: never let them stand in.
-				if (switching() && !refresh && !append) setLoaded([]);
-			}
+			if (fetchGen() === gen) setLoadError(loadErrorOf(e));
 		} finally {
 			if (fetchGen() === gen) {
 				if (!waiting) settle();
@@ -393,17 +395,19 @@ const ConversationList: Component = () => {
 				isLoadingMore = false;
 				if (scrollRef) scrollRef.scrollTop = 0;
 				const filters = buildFilters({ offset: 0 });
+				// The rows are the new view's from here on: its page from this tab, else none until
+				// fetchRows paints the device's or the server answers (the skeleton meanwhile). Never the
+				// last view's: a failed or slow switch listed All mail under "Sent" (UX walkthrough P1-4).
 				const page = peekConversationPage(filters);
+				const rows = page?.emails ?? [];
+				setLoading(rows.length === 0);
+				setLoaded(rows);
 				setSearchInfo(page?.search ?? null);
-				if (page && page.emails.length > 0) {
-					setLoaded(page.emails);
+				if (page && rows.length > 0) {
 					setTotal(page.total);
 					setHasMore(moreOf(page));
 					setNextCursor(page.next_cursor ?? null);
-					setLoading(false);
-					setSwitching(false);
-				} else if (loaded().length === 0) setLoading(true);
-				else setSwitching(true);
+				}
 				cancelPendingRequests(filtersKey(filters));
 				void fetchRows(false, { filters });
 			},
@@ -608,8 +612,8 @@ const ConversationList: Component = () => {
 	const selectedRows = () => loaded().filter((e) => selected().has(e.id));
 
 	/**
-	 * Delete forever (S7): only inside Trash, after the confirm that names it; no Undo. Only rows in
-	 * Trash: the last view's rows stay drawn while Trash loads, each with its own actions.
+	 * Delete forever (S7): only inside Trash, after the confirm that names it; no Undo. The confirm
+	 * names only rows the device holds as Trash: there is no Undo, so a row that isn't is never offered.
 	 */
 	const askDeleteForever = (rows: ConversationSummaryRecord[]) => {
 		const trashed = rows.filter((row) => row.mailbox_state === "trash");
@@ -651,18 +655,34 @@ const ConversationList: Component = () => {
 		);
 	};
 
-	const open = (email: ConversationSummaryRecord, index: number) => {
+	/**
+	 * A row opens its conversation (ux-w-p1-2). A row that is only its draft opens the draft's window
+	 * instead, unless that draft is already open as a reply (waiting in the dock): it opens under its
+	 * thread. Any other draft row brings its draft along as the thread's reply (under it; on a phone
+	 * the reply sheet), so the person's message is on screen and Reply doesn't start a second draft.
+	 * A hop (Archive's next, Prev/Next, j/k while reading) opens the conversation only, no composer.
+	 */
+	const open = (email: ConversationSummaryRecord, index: number, hop = false) => {
 		setCursor(index);
-		// Drafts reopen in compose, not in a read-only thread.
-		if (email.mailbox_state === "draft") {
-			actions.editDraft(email.display_email_id ?? email.latest_email_id ?? email.id);
+		const shown = email.display_email_id ?? email.latest_email_id ?? email.id;
+		const draft = !hop && email.mailbox_state === "draft";
+		const replying = state.composeWindows.some(
+			(w) => w.draftId === shown && Boolean(w.replyTo?.conversationId),
+		);
+		if (draft && draftOnly(email) && !replying) {
+			actions.editDraft(shown);
 			return;
 		}
-		actions.selectConversation(
-			email.id,
-			email.display_email_id ?? email.latest_email_id ?? email.id,
-		);
+		// A draft is never the thread's anchor: once it is sent or discarded, a refresh anchored on it
+		// would ask for a message that no longer exists (404) and the open thread would stop refreshing.
+		actions.selectConversation(email.id, email.mailbox_state === "draft" ? null : shown);
 		markRead(email);
+		if (draft)
+			actions.editDraft(
+				shown,
+				{ emailId: shown, mode: "reply", conversationId: email.id },
+				{ joinThreadReply: true },
+			);
 	};
 
 	// The thread bar's Prev/Next and Archive's next open through the list, so the row reads as read.
@@ -670,7 +690,7 @@ const ConversationList: Component = () => {
 		const list = emails();
 		const index = list.findIndex((e) => e.id === id);
 		if (index < 0) return false;
-		open(list[index], index);
+		open(list[index], index, true);
 		return true;
 	});
 	onCleanup(() => setListedOpener(null));
@@ -704,9 +724,11 @@ const ConversationList: Component = () => {
 		const row = current >= 0 ? list[current] : undefined;
 		const step = (d: number) => {
 			if (list.length === 0) return;
-			const next = Math.max(0, Math.min(list.length - 1, current + d));
+			let next = Math.max(0, Math.min(list.length - 1, current + d));
 			if (hopping) {
-				if (next !== current) open(list[next], next);
+				// The next conversation: a row that is only its draft is passed (ux-w-p1-2).
+				while (list[next] && draftOnly(list[next])) next += d;
+				if (list[next] && next !== current) open(list[next], next, true);
 				if (next >= list.length - 3) loadMore();
 				return;
 			}
@@ -802,7 +824,7 @@ const ConversationList: Component = () => {
 	const searchStatus = (): SearchStatus => {
 		const error = loadError();
 		if (error) return error.offline ? "offline" : error.message ? "rejected" : "error";
-		return loading() || switching() ? "loading" : "answered";
+		return loading() ? "loading" : "answered";
 	};
 	const searchFiltersFor = (scope: SearchScope): EmailFilters => {
 		const filters = buildFilters({ offset: 0 });
@@ -984,10 +1006,9 @@ const ConversationList: Component = () => {
 			</Show>
 
 			<Switch>
-				{/* A new search shows the skeleton, never the previous list under its title (S4). */}
-				<Match
-					when={loading() || (switching() && (emails().length === 0 || Boolean(state.searchQuery)))}
-				>
+				{/* A new view or search with nothing of its own yet shows the skeleton, never the previous
+				    list under its title (S4, P1-4). */}
+				<Match when={loading()}>
 					<ul class="list-none" aria-busy="true" aria-label="Loading">
 						<For each={Array.from({ length: 12 }, (_, i) => i)}>
 							{(i) => (
@@ -1038,8 +1059,8 @@ const ConversationList: Component = () => {
 				<Match when={true}>
 					<ul
 						class="mc-rows list-none transition-opacity"
-						classList={{ "opacity-60": switching() || awaitingNetwork() }}
-						aria-busy={switching() || awaitingNetwork()}
+						classList={{ "opacity-60": awaitingNetwork() }}
+						aria-busy={awaitingNetwork()}
 						data-selecting={selected().size > 0 ? "true" : "false"}
 						data-phone={phone() || twoLine() ? "true" : "false"}
 					>

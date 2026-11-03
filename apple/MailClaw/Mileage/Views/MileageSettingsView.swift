@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Mileage's settings: recording (iPhone), the IRS rate periods, the companies and your saved places.
+/// Mileage's settings: recording (iPhone; the iPad says where drives are recorded), the IRS rate periods, the
+/// companies and your saved places.
 /// The Mac shows it in the Settings window (⌘,); the iPhone from the report's last row. Each change
 /// saves at once and the report is read again. Signing out is the app's own (one sign-in); signed
 /// out, or not a Mileage owner, one sentence stands in.
@@ -412,12 +413,28 @@ struct MileagePermissionButton: View {
 
 #if os(iOS)
 /// Recording on this iPhone: always on while signed in (owner, 2026-11-02), and what location access it has.
-/// No switch: iOS Settings → Location is how to stop it.
+/// No switch: iOS Settings → Location is how to stop it. An iPad doesn't record (`MileageModel.recordsHere`,
+/// iPad/Mac UX walk P1-2): it says where its trips come from.
 struct MileageRecordingSection: View {
 	@Environment(MileageModel.self) private var mileage
 	@Environment(\.mcPalette) private var palette
 
 	var body: some View {
+		if MileageModel.recordsHere { recording } else { elsewhere }
+	}
+
+	private var elsewhere: some View {
+		Section {
+			Text("Drives are recorded on the iPhone signed in to this account.").foregroundStyle(.mcText)
+				.fixedSize(horizontal: false, vertical: true)
+				.accessibilityIdentifier("mileage-recording-device")
+		} header: {
+			Text("Recording").foregroundStyle(.mcMuted)
+		}
+		.mcRows(palette)
+	}
+
+	private var recording: some View {
 		Section {
 			Text(mileage.health).foregroundStyle(.mcText)
 				.fixedSize(horizontal: false, vertical: true)

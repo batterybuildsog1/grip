@@ -62,8 +62,9 @@ struct MileageReportView: View {
 		}
 	}
 
-	/// This iPhone (or iPad) records this owner's drives and iOS hasn't given it Always and Precise location:
-	/// `true` = only iOS Settings can fix it, `false` = Grip can still ask. The Mac never records.
+	/// This iPhone records this owner's drives and iOS hasn't given it Always and Precise location:
+	/// `true` = only iOS Settings can fix it, `false` = Grip can still ask. The iPad and the Mac never record
+	/// (`MileageModel.recordsHere`), so this stays nil there.
 	private var permission: Bool? {
 		#if os(iOS)
 		mileage.permissionLost
@@ -81,8 +82,9 @@ struct MileageReportView: View {
 			lines.append(Self.unreadable(report.month) + " This is the report from \(time).")
 		}
 		#if os(iOS)
+		// An iPad can still hold drives build 12 recorded there: the device's own name, never "iPhone" on an iPad.
 		if mileage.pending > 0 {
-			lines.append("\(mileage.pending) trip\(mileage.pending == 1 ? "" : "s") recorded on this iPhone "
+			lines.append("\(mileage.pending) trip\(mileage.pending == 1 ? "" : "s") recorded on this \(UIDevice.current.model) "
 				+ "\(mileage.pending == 1 ? "waits" : "wait") to upload")
 		}
 		#endif

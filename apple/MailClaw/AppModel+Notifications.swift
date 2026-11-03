@@ -33,6 +33,27 @@ extension AppModel {
 		#endif
 	}
 
+	#if os(iOS)
+	/// What iOS allows Grip: read when the app comes to the front, when Account opens and after an ask. Fixture runs
+	/// never read the real center (their rows show the setting alone). The Mac keeps `notificationsDenied` from its
+	/// own request above.
+	func readNotificationPermission() async {
+		// Never beside sign-in's ask (a read overlapping it never answered on the old code): it reads again after it.
+		guard !LaunchOptions.fixtureMode, !notifications.asking else { return }
+		let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+		notificationsAllowed = status == .authorized || status == .provisional || status == .ephemeral
+		notificationsDenied = status == .denied
+	}
+
+	/// Account's switch turned on: iOS asks if it never has (iOS answers at once otherwise); once refused, only iOS
+	/// Settings can allow it. Fixture runs ask too, as before (TriageTests allows it to see banners).
+	func turnOnNotifications() async {
+		notifyEnabled = true
+		_ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound])
+		await readNotificationPermission()
+	}
+	#endif
+
 	func notificationsChanged() {
 		prepareNotifications()
 		// Starts or stops the checks while the window is closed.
